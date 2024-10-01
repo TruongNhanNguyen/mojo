@@ -19,22 +19,23 @@ from random import seed
 ```
 """
 
-from sys import external_call, bitwidthof
-from time import now
+from sys import bitwidthof, external_call
+from time import perf_counter_ns
+from collections import Optional
 
-from memory import DTypePointer
+from memory import UnsafePointer
 
 
-fn _get_random_state() -> DTypePointer[DType.invalid]:
+fn _get_random_state() -> UnsafePointer[NoneType]:
     return external_call[
         "KGEN_CompilerRT_GetRandomState",
-        DTypePointer[DType.invalid],
+        UnsafePointer[NoneType],
     ]()
 
 
 fn seed():
     """Seeds the random number generator using the current time."""
-    seed(now())
+    seed(perf_counter_ns())
 
 
 fn seed(a: Int):
@@ -95,7 +96,7 @@ fn random_ui64(min: UInt64, max: UInt64) -> UInt64:
 
 fn randint[
     type: DType
-](ptr: DTypePointer[type], size: Int, low: Int, high: Int):
+](ptr: UnsafePointer[Scalar[type]], size: Int, low: Int, high: Int):
     """Fills memory with uniform random in range [low, high].
 
     Constraints:
@@ -121,7 +122,17 @@ fn randint[
             ptr[ui] = random_ui64(low, high).cast[type]()
 
 
-fn rand[type: DType](ptr: DTypePointer[type], size: Int):
+fn rand[
+    type: DType
+](
+    ptr: UnsafePointer[Scalar[type]],
+    size: Int,
+    /,
+    *,
+    min: Float64 = 0.0,
+    max: Float64 = 1.0,
+    int_scale: Optional[Int] = None,
+):
     """Fills memory with random values from a uniform distribution.
 
     Parameters:
@@ -130,33 +141,69 @@ fn rand[type: DType](ptr: DTypePointer[type], size: Int):
     Args:
         ptr: The pointer to the memory area to fill.
         size: The number of elements to fill.
+        min: The minimum value for random.
+        max: The maximum value for random.
+        int_scale: The scale for error checking (float type only).
     """
     alias bitwidth = bitwidthof[type]()
 
+    var scale_val = int_scale.or_else(-1)
+
     @parameter
     if type.is_floating_point():
-        for i in range(size):
-            ptr[i] = random_float64().cast[type]()
+        if scale_val >= 0:
+            var scale_double: Float64 = (1 << scale_val)
+            for i in range(size):
+                var rnd = random_float64(min, max)
+                ptr[i] = (
+                    (rnd * scale_double)
+                    .cast[DType.int64]()
+                    .cast[DType.float64]()
+                    / scale_double
+                ).cast[type]()
+        else:
+            for i in range(size):
+                var rnd = random_float64(min, max)
+                ptr[i] = rnd.cast[type]()
+
         return
 
     @parameter
-    if type == DType.bool:
+    if type is DType.bool:
+        var min_: UInt64 = 0 if min < 0 else min.cast[DType.uint64]()
+        var max_: UInt64 = (1 << bitwidth) - 1
+        max_ = (
+            max.cast[DType.uint64]() if max.cast[DType.uint64]()
+            < max_ else max_
+        )
         for i in range(size):
-            ptr[i] = random_ui64(0, 1).cast[type]()
+            ptr[i] = random_ui64(min_, max_).cast[type]()
         return
 
     @parameter
     if type.is_signed():
+        var min_: Int64 = -(1 << (bitwidth - 1))
+        min_ = (
+            min.cast[DType.int64]() if min.cast[DType.int64]() > min_ else min_
+        )
+        var max_: Int64 = (1 << (bitwidth - 1)) - 1
+        max_ = (
+            max.cast[DType.int64]() if max.cast[DType.int64]() < max_ else max_
+        )
         for i in range(size):
-            ptr[i] = random_si64(
-                -(1 << (bitwidth - 1)), (1 << (bitwidth - 1)) - 1
-            ).cast[type]()
+            ptr[i] = random_si64(min_, max_).cast[type]()
         return
 
     @parameter
     if type.is_unsigned():
+        var min_: UInt64 = 0 if min < 0 else min.cast[DType.uint64]()
+        var max_: UInt64 = (1 << bitwidth) - 1
+        max_ = (
+            max.cast[DType.uint64]() if max.cast[DType.uint64]()
+            < max_ else max_
+        )
         for i in range(size):
-            ptr[i] = random_ui64(0, (1 << bitwidth) - 1).cast[type]()
+            ptr[i] = random_ui64(min_, max_).cast[type]()
         return
 
 
@@ -178,7 +225,7 @@ fn randn_float64(mean: Float64 = 0.0, variance: Float64 = 1.0) -> Float64:
 fn randn[
     type: DType
 ](
-    ptr: DTypePointer[type],
+    ptr: UnsafePointer[Scalar[type]],
     size: Int,
     mean: Float64 = 0.0,
     variance: Float64 = 1.0,

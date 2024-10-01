@@ -27,6 +27,9 @@ struct TestCounter(CollectionElement):
         self.copied = 0
         self.moved = 0
 
+    fn __init__(inout self, *, other: Self):
+        self = other
+
     fn __copyinit__(inout self, other: Self):
         self.copied = other.copied + 1
         self.moved = other.moved
@@ -44,14 +47,14 @@ fn _poison_ptr() -> UnsafePointer[Bool]:
 
 
 fn assert_no_poison() raises:
-    assert_false(move_from_pointee(_poison_ptr()))
+    assert_false(_poison_ptr().take_pointee())
 
 
 fn _initialize_poison(
     payload: UnsafePointer[NoneType],
 ) -> UnsafePointer[NoneType]:
     var poison = UnsafePointer[Bool].alloc(1)
-    initialize_pointee_move(poison, False)
+    poison.init_pointee_move(False)
     return poison.bitcast[NoneType]()
 
 
@@ -63,14 +66,17 @@ struct Poison(CollectionElement):
     fn __init__(inout self):
         pass
 
+    fn __init__(inout self, *, other: Self):
+        _poison_ptr().init_pointee_move(True)
+
     fn __copyinit__(inout self, other: Self):
-        initialize_pointee_move(_poison_ptr(), True)
+        _poison_ptr().init_pointee_move(True)
 
     fn __moveinit__(inout self, owned other: Self):
-        initialize_pointee_move(_poison_ptr(), True)
+        _poison_ptr().init_pointee_move(True)
 
     fn __del__(owned self):
-        initialize_pointee_move(_poison_ptr(), True)
+        _poison_ptr().init_pointee_move(True)
 
 
 alias TestVariant = Variant[TestCounter, Poison]
@@ -138,8 +144,11 @@ def test_move():
 struct ObservableDel(CollectionElement):
     var target: UnsafePointer[Bool]
 
+    fn __init__(inout self, *, other: Self):
+        self = other
+
     fn __del__(owned self):
-        initialize_pointee_move(self.target, True)
+        self.target.init_pointee_move(True)
 
 
 def test_del():

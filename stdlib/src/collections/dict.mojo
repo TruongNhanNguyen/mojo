@@ -34,6 +34,8 @@ See the `Dict` docs for more details.
 from builtin.value import StringableCollectionElement
 
 from .optional import Optional
+from bit import is_power_of_two
+from memory import memcpy, bitcast
 
 
 trait KeyElement(CollectionElement, Hashable, EqualityComparable):
@@ -54,48 +56,33 @@ trait RepresentableKeyElement(KeyElement, Representable):
 
 @value
 struct _DictEntryIter[
+    dict_mutability: Bool, //,
     K: KeyElement,
     V: CollectionElement,
-    dict_mutability: Bool,
     dict_lifetime: AnyLifetime[dict_mutability].type,
     forward: Bool = True,
 ]:
     """Iterator over immutable DictEntry references.
 
     Parameters:
+        dict_mutability: Whether the reference to the dictionary is mutable.
         K: The key type of the elements in the dictionary.
         V: The value type of the elements in the dictionary.
-        dict_mutability: Whether the reference to the dictionary is mutable.
         dict_lifetime: The lifetime of the List
         forward: The iteration direction. `False` is backwards.
     """
 
-    alias imm_dict_lifetime = __mlir_attr[
-        `#lit.lifetime.mutcast<`, dict_lifetime, `> : !lit.lifetime<1>`
-    ]
-    alias ref_type = Reference[DictEntry[K, V], False, Self.imm_dict_lifetime]
-
     var index: Int
     var seen: Int
-    var src: Reference[Dict[K, V], dict_mutability, dict_lifetime]
+    var src: Reference[Dict[K, V], dict_lifetime]
 
     fn __iter__(self) -> Self:
         return self
 
     @always_inline
-    fn __next__(inout self) -> Self.ref_type:
+    fn __next__(inout self) -> Reference[DictEntry[K, V], dict_lifetime]:
         while True:
-            var opt_entry_ref = self.src[]._entries.__get_ref(self.index)
-            if opt_entry_ref[]:
-
-                @parameter
-                if forward:
-                    self.index += 1
-                else:
-                    self.index -= 1
-
-                self.seen += 1
-                return opt_entry_ref[].value()[]
+            var opt_entry_ref = Reference(self.src[]._entries[self.index])
 
             @parameter
             if forward:
@@ -103,43 +90,40 @@ struct _DictEntryIter[
             else:
                 self.index -= 1
 
+            if opt_entry_ref[]:
+                self.seen += 1
+                return opt_entry_ref[].value()
+
     fn __len__(self) -> Int:
         return len(self.src[]) - self.seen
 
 
 @value
 struct _DictKeyIter[
+    dict_mutability: Bool, //,
     K: KeyElement,
     V: CollectionElement,
-    dict_mutability: Bool,
     dict_lifetime: AnyLifetime[dict_mutability].type,
     forward: Bool = True,
 ]:
     """Iterator over immutable Dict key references.
 
     Parameters:
+        dict_mutability: Whether the reference to the vector is mutable.
         K: The key type of the elements in the dictionary.
         V: The value type of the elements in the dictionary.
-        dict_mutability: Whether the reference to the vector is mutable.
         dict_lifetime: The lifetime of the List
         forward: The iteration direction. `False` is backwards.
     """
 
-    alias imm_dict_lifetime = __mlir_attr[
-        `#lit.lifetime.mutcast<`, dict_lifetime, `> : !lit.lifetime<1>`
-    ]
-    alias ref_type = Reference[K, False, Self.imm_dict_lifetime]
-
-    alias dict_entry_iter = _DictEntryIter[
-        K, V, dict_mutability, dict_lifetime, forward
-    ]
+    alias dict_entry_iter = _DictEntryIter[K, V, dict_lifetime, forward]
 
     var iter: Self.dict_entry_iter
 
     fn __iter__(self) -> Self:
         return self
 
-    fn __next__(inout self) -> Self.ref_type:
+    fn __next__(inout self) -> Reference[K, dict_lifetime]:
         return self.iter.__next__()[].key
 
     fn __len__(self) -> Int:
@@ -148,9 +132,9 @@ struct _DictKeyIter[
 
 @value
 struct _DictValueIter[
+    dict_mutability: Bool, //,
     K: KeyElement,
     V: CollectionElement,
-    dict_mutability: Bool,
     dict_lifetime: AnyLifetime[dict_mutability].type,
     forward: Bool = True,
 ]:
@@ -158,27 +142,25 @@ struct _DictValueIter[
     is mutable.
 
     Parameters:
+        dict_mutability: Whether the reference to the vector is mutable.
         K: The key type of the elements in the dictionary.
         V: The value type of the elements in the dictionary.
-        dict_mutability: Whether the reference to the vector is mutable.
         dict_lifetime: The lifetime of the List
         forward: The iteration direction. `False` is backwards.
     """
 
-    alias ref_type = Reference[V, dict_mutability, dict_lifetime]
+    alias ref_type = Reference[V, dict_lifetime]
 
-    var iter: _DictEntryIter[K, V, dict_mutability, dict_lifetime, forward]
+    var iter: _DictEntryIter[K, V, dict_lifetime, forward]
 
     fn __iter__(self) -> Self:
         return self
 
-    fn __reversed__[
-        mutability: Bool, self_life: AnyLifetime[mutability].type
-    ](self) -> _DictValueIter[K, V, dict_mutability, dict_lifetime, False]:
+    fn __reversed__(self) -> _DictValueIter[K, V, dict_lifetime, False]:
         var src = self.iter.src
         return _DictValueIter(
-            _DictEntryIter[K, V, dict_mutability, dict_lifetime, False](
-                src[]._reserved - 1, 0, src
+            _DictEntryIter[K, V, dict_lifetime, False](
+                src[]._reserved() - 1, 0, src
             )
         )
 
@@ -193,7 +175,9 @@ struct _DictValueIter[
 
 
 @value
-struct DictEntry[K: KeyElement, V: CollectionElement](CollectionElement):
+struct DictEntry[K: KeyElement, V: CollectionElement](
+    CollectionElement, CollectionElementNew
+):
     """Store a key-value pair entry inside a dictionary.
 
     Parameters:
@@ -219,6 +203,25 @@ struct DictEntry[K: KeyElement, V: CollectionElement](CollectionElement):
         self.key = key^
         self.value = value^
 
+    fn __init__(inout self, *, other: Self):
+        """Copy an existing entry.
+
+        Args:
+            other: The existing entry to copy.
+        """
+        self.hash = other.hash
+        self.key = other.key
+        self.value = other.value
+
+    fn reap_value(owned self) -> V:
+        """Take the value from an owned entry.
+
+        Returns:
+            The value of the entry.
+        """
+        __mlir_op.`lit.ownership.mark_destroyed`(__get_mvalue_as_litref(self))
+        return self.value^
+
 
 alias _EMPTY = -1
 alias _REMOVED = -2
@@ -236,48 +239,48 @@ struct _DictIndex:
     this in the current type system.
     """
 
-    var data: DTypePointer[DType.invalid]
+    var data: UnsafePointer[NoneType]
 
     @always_inline
     fn __init__(inout self, reserved: Int):
         if reserved <= 128:
-            var data = DTypePointer[DType.int8].alloc(reserved)
+            var data = UnsafePointer[Int8].alloc(reserved)
             for i in range(reserved):
                 data[i] = _EMPTY
-            self.data = data.bitcast[DType.invalid]()
+            self.data = data.bitcast[NoneType]()
         elif reserved <= 2**16 - 2:
-            var data = DTypePointer[DType.int16].alloc(reserved)
+            var data = UnsafePointer[Int16].alloc(reserved)
             for i in range(reserved):
                 data[i] = _EMPTY
-            self.data = data.bitcast[DType.invalid]()
+            self.data = data.bitcast[NoneType]()
         elif reserved <= 2**32 - 2:
-            var data = DTypePointer[DType.int32].alloc(reserved)
+            var data = UnsafePointer[Int32].alloc(reserved)
             for i in range(reserved):
                 data[i] = _EMPTY
-            self.data = data.bitcast[DType.invalid]()
+            self.data = data.bitcast[NoneType]()
         else:
-            var data = DTypePointer[DType.int64].alloc(reserved)
+            var data = UnsafePointer[Int64].alloc(reserved)
             for i in range(reserved):
                 data[i] = _EMPTY
-            self.data = data.bitcast[DType.invalid]()
+            self.data = data.bitcast[NoneType]()
 
     fn copy(self, reserved: Int) -> Self:
         var index = Self(reserved)
         if reserved <= 128:
-            var data = self.data.bitcast[DType.int8]()
-            var new_data = index.data.bitcast[DType.int8]()
+            var data = self.data.bitcast[Int8]()
+            var new_data = index.data.bitcast[Int8]()
             memcpy(new_data, data, reserved)
         elif reserved <= 2**16 - 2:
-            var data = self.data.bitcast[DType.int16]()
-            var new_data = index.data.bitcast[DType.int16]()
+            var data = self.data.bitcast[Int16]()
+            var new_data = index.data.bitcast[Int16]()
             memcpy(new_data, data, reserved)
         elif reserved <= 2**32 - 2:
-            var data = self.data.bitcast[DType.int32]()
-            var new_data = index.data.bitcast[DType.int32]()
+            var data = self.data.bitcast[Int32]()
+            var new_data = index.data.bitcast[Int32]()
             memcpy(new_data, data, reserved)
         else:
-            var data = self.data.bitcast[DType.int64]()
-            var new_data = index.data.bitcast[DType.int64]()
+            var data = self.data.bitcast[Int64]()
+            var new_data = index.data.bitcast[Int64]()
             memcpy(new_data, data, reserved)
         return index^
 
@@ -286,38 +289,38 @@ struct _DictIndex:
 
     fn get_index(self, reserved: Int, slot: Int) -> Int:
         if reserved <= 128:
-            var data = self.data.bitcast[DType.int8]()
-            return int(data.load(slot % reserved))
+            var data = self.data.bitcast[Int8]()
+            return int(data.load(slot & (reserved - 1)))
         elif reserved <= 2**16 - 2:
-            var data = self.data.bitcast[DType.int16]()
-            return int(data.load(slot % reserved))
+            var data = self.data.bitcast[Int16]()
+            return int(data.load(slot & (reserved - 1)))
         elif reserved <= 2**32 - 2:
-            var data = self.data.bitcast[DType.int32]()
-            return int(data.load(slot % reserved))
+            var data = self.data.bitcast[Int32]()
+            return int(data.load(slot & (reserved - 1)))
         else:
-            var data = self.data.bitcast[DType.int64]()
-            return int(data.load(slot % reserved))
+            var data = self.data.bitcast[Int64]()
+            return int(data.load(slot & (reserved - 1)))
 
     fn set_index(inout self, reserved: Int, slot: Int, value: Int):
         if reserved <= 128:
-            var data = self.data.bitcast[DType.int8]()
-            return data.store(slot % reserved, value)
+            var data = self.data.bitcast[Int8]()
+            return data.store(slot & (reserved - 1), value)
         elif reserved <= 2**16 - 2:
-            var data = self.data.bitcast[DType.int16]()
-            return data.store(slot % reserved, value)
+            var data = self.data.bitcast[Int16]()
+            return data.store(slot & (reserved - 1), value)
         elif reserved <= 2**32 - 2:
-            var data = self.data.bitcast[DType.int32]()
-            return data.store(slot % reserved, value)
+            var data = self.data.bitcast[Int32]()
+            return data.store(slot & (reserved - 1), value)
         else:
-            var data = self.data.bitcast[DType.int64]()
-            return data.store(slot % reserved, value)
+            var data = self.data.bitcast[Int64]()
+            return data.store(slot & (reserved - 1), value)
 
     fn __del__(owned self):
         self.data.free()
 
 
 struct Dict[K: KeyElement, V: CollectionElement](
-    Sized, CollectionElement, Boolable
+    Sized, CollectionElement, CollectionElementNew, Boolable
 ):
     """A container that stores key-value pairs.
 
@@ -429,10 +432,11 @@ struct Dict[K: KeyElement, V: CollectionElement](
     """The number of elements currently stored in the dict."""
     var _n_entries: Int
     """The number of entries currently allocated."""
-    var _reserved: Int
-    """The current reserved size of the dictionary."""
 
     var _index: _DictIndex
+
+    # We use everything available in the list. Which means that
+    # len(self._entries) == self._entries.capacity == self._reserved()
     var _entries: List[Optional[DictEntry[K, V]]]
 
     # ===-------------------------------------------------------------------===#
@@ -444,25 +448,54 @@ struct Dict[K: KeyElement, V: CollectionElement](
         """Initialize an empty dictiontary."""
         self.size = 0
         self._n_entries = 0
-        self._reserved = Self._initial_reservation
-        self._index = _DictIndex(self._reserved)
-        self._entries = Self._new_entries(self._reserved)
+        self._entries = Self._new_entries(Self._initial_reservation)
+        self._index = _DictIndex(len(self._entries))
 
     @always_inline
-    fn __init__(inout self, existing: Self):
+    fn __init__(inout self, *, power_of_two_initial_capacity: Int):
+        """Initialize an empty dictiontary with a pre-reserved initial capacity.
+
+        Args:
+            power_of_two_initial_capacity: At least 8, has to be a power of two.
+
+        Example usage:
+
+        ```mojo
+        var x = Dict[Int,Int](power_of_two_initial_capacity = 1024)
+        # Insert (2/3 of 1024) entries without reallocation.
+        ```
+
+        """
+        debug_assert(
+            bit.is_power_of_two(power_of_two_initial_capacity)
+            and power_of_two_initial_capacity >= 8,
+            "power_of_two_initial_capacity need to be >=8 and a power of two",
+        )
+        self.size = 0
+        self._n_entries = 0
+        self._entries = Self._new_entries(power_of_two_initial_capacity)
+        self._index = _DictIndex(len(self._entries))
+
+    # TODO: add @property when Mojo supports it to make
+    # it possible to do `self._reserved`.
+    @always_inline
+    fn _reserved(self) -> Int:
+        return len(self._entries)
+
+    @always_inline
+    fn __init__(inout self, *, other: Self):
         """Copy an existing dictiontary.
 
         Args:
-            existing: The existing dict.
+            other: The existing dict.
         """
-        self.size = existing.size
-        self._n_entries = existing._n_entries
-        self._reserved = existing._reserved
-        self._index = existing._index.copy(existing._reserved)
-        self._entries = existing._entries
+        self.size = other.size
+        self._n_entries = other._n_entries
+        self._index = other._index.copy(other._reserved())
+        self._entries = other._entries
 
     @staticmethod
-    fn fromkeys(keys: List[K], value: V) -> Self:
+    fn fromkeys(keys: List[K, *_], value: V) -> Self:
         """Create a new dictionary with keys from list and values set to value.
 
         Args:
@@ -479,7 +512,7 @@ struct Dict[K: KeyElement, V: CollectionElement](
 
     @staticmethod
     fn fromkeys(
-        keys: List[K], value: Optional[V] = None
+        keys: List[K, *_], value: Optional[V] = None
     ) -> Dict[K, Optional[V]]:
         """Create a new dictionary with keys from list and values set to value.
 
@@ -490,10 +523,7 @@ struct Dict[K: KeyElement, V: CollectionElement](
         Returns:
             The new dictionary.
         """
-        var dict = Dict[K, Optional[V]]()
-        for key in keys:
-            dict[key[]] = value
-        return dict
+        return Dict[K, Optional[V]].fromkeys(keys, value)
 
     fn __copyinit__(inout self, existing: Self):
         """Copy an existing dictiontary.
@@ -503,8 +533,7 @@ struct Dict[K: KeyElement, V: CollectionElement](
         """
         self.size = existing.size
         self._n_entries = existing._n_entries
-        self._reserved = existing._reserved
-        self._index = existing._index.copy(existing._reserved)
+        self._index = existing._index.copy(existing._reserved())
         self._entries = existing._entries
 
     fn __moveinit__(inout self, owned existing: Self):
@@ -515,7 +544,6 @@ struct Dict[K: KeyElement, V: CollectionElement](
         """
         self.size = existing.size
         self._n_entries = existing._n_entries
-        self._reserved = existing._reserved
         self._index = existing._index^
         self._entries = existing._entries^
 
@@ -523,6 +551,7 @@ struct Dict[K: KeyElement, V: CollectionElement](
     # Operator dunders
     # ===-------------------------------------------------------------------===#
 
+    # TODO(MSTDL-452): rename to __getitem__ returning a reference
     fn __getitem__(self, key: K) raises -> V:
         """Retrieve a value out of the dictionary.
 
@@ -535,24 +564,7 @@ struct Dict[K: KeyElement, V: CollectionElement](
         Raises:
             "KeyError" if the key isn't present.
         """
-        return self._find_ref(key)[]
-
-    # TODO(MSTDL-452): rename to __getitem__ returning a reference
-    fn __get_ref(
-        self: Reference[Self, _, _], key: K
-    ) raises -> Reference[V, self.is_mutable, self.lifetime]:
-        """Retrieve a value out of the dictionary.
-
-        Args:
-            key: The key to retrieve.
-
-        Returns:
-            The value associated with the key, if it's present.
-
-        Raises:
-            "KeyError" if the key isn't present.
-        """
-        return self[]._find_ref(key)
+        return self._find_ref(key)
 
     fn __setitem__(inout self, owned key: K, owned value: V):
         """Set a value in the dictionary by key.
@@ -575,8 +587,8 @@ struct Dict[K: KeyElement, V: CollectionElement](
         return self.find(key).__bool__()
 
     fn __iter__(
-        self: Reference[Self, _, _],
-    ) -> _DictKeyIter[K, V, self.is_mutable, self.lifetime]:
+        ref [_]self: Self,
+    ) -> _DictKeyIter[K, V, __lifetime_of(self)]:
         """Iterate over the dict's keys as immutable references.
 
         Returns:
@@ -585,15 +597,15 @@ struct Dict[K: KeyElement, V: CollectionElement](
         return _DictKeyIter(_DictEntryIter(0, 0, self))
 
     fn __reversed__(
-        self: Reference[Self, _, _]
-    ) -> _DictKeyIter[K, V, self.is_mutable, self.lifetime, False]:
+        ref [_]self: Self,
+    ) -> _DictKeyIter[K, V, __lifetime_of(self), False]:
         """Iterate backwards over the dict keys, returning immutable references.
 
         Returns:
             A reversed iterator of immutable references to the dict keys.
         """
         return _DictKeyIter(
-            _DictEntryIter[forward=False](self[]._reserved - 1, 0, self)
+            _DictEntryIter[forward=False](self._reserved() - 1, 0, self)
         )
 
     fn __or__(self, other: Self) -> Self:
@@ -605,7 +617,7 @@ struct Dict[K: KeyElement, V: CollectionElement](
         Returns:
             The result of the merge.
         """
-        var result = Dict(self)
+        var result = Dict(other=self)
         result.update(other)
         return result^
 
@@ -622,7 +634,11 @@ struct Dict[K: KeyElement, V: CollectionElement](
     # ===-------------------------------------------------------------------===#
 
     fn __len__(self) -> Int:
-        """The number of elements currently stored in the dictionary."""
+        """The number of elements currently stored in the dictionary.
+
+        Returns:
+            The number of elements currently stored in the dictionary.
+        """
         return self.size
 
     fn __bool__(self) -> Bool:
@@ -633,8 +649,9 @@ struct Dict[K: KeyElement, V: CollectionElement](
         """
         return len(self).__bool__()
 
+    @no_inline
     fn __str__[
-        T: RepresentableKeyElement, U: RepresentableCollectionElement
+        T: RepresentableKeyElement, U: RepresentableCollectionElement, //
     ](self: Dict[T, U]) -> String:
         """Returns a string representation of a `Dict`.
 
@@ -705,14 +722,14 @@ struct Dict[K: KeyElement, V: CollectionElement](
             otherwise an empty Optional.
         """
         try:  # TODO(MOCO-604): push usage through
-            return self._find_ref(key)[]
+            return self._find_ref(key)
         except:
             return None
 
     # TODO(MOCO-604): Return Optional[Reference] instead of raising
     fn _find_ref(
-        self: Reference[Self, _, _], key: K
-    ) raises -> Reference[V, self.is_mutable, self.lifetime]:
+        ref [_]self: Self, key: K
+    ) raises -> ref [__lifetime_of(self)] Self.V:
         """Find a value in the dictionary by key.
 
         Args:
@@ -726,11 +743,11 @@ struct Dict[K: KeyElement, V: CollectionElement](
         var found: Bool
         var slot: Int
         var index: Int
-        found, slot, index = self[]._find_index(hash, key)
+        found, slot, index = self._find_index(hash, key)
         if found:
-            var entry = self[]._entries.__get_ref(index)
+            var entry = Reference(self._entries[index])
             debug_assert(entry[].__bool__(), "entry in index must be full")
-            return Reference(entry[].value()[].value)
+            return entry[].value().value
         raise "KeyError"
 
     fn get(self, key: K) -> Optional[V]:
@@ -757,21 +774,35 @@ struct Dict[K: KeyElement, V: CollectionElement](
         """
         return self.find(key).or_else(default)
 
-    fn pop(inout self, key: K, owned default: Optional[V] = None) raises -> V:
+    fn pop(inout self, key: K, owned default: V) -> V:
         """Remove a value from the dictionary by key.
 
         Args:
             key: The key to remove from the dictionary.
-            default: Optionally provide a default value to return if the key
+            default: A default value to return if the key
                 was not found instead of raising.
 
         Returns:
             The value associated with the key, if it was in the dictionary.
             If it wasn't, return the provided default value instead.
+        """
+        try:
+            return self.pop(key)
+        except:
+            return default
+
+    fn pop(inout self, key: K) raises -> V:
+        """Remove a value from the dictionary by key.
+
+        Args:
+            key: The key to remove from the dictionary.
+
+        Returns:
+            The value associated with the key, if it was in the dictionary.
+            Raises otherwise.
 
         Raises:
-            "KeyError" if the key was not present in the dictionary and no
-            default value was provided.
+            "KeyError" if the key was not present in the dictionary.
         """
         var hash = hash(key)
         var found: Bool
@@ -780,19 +811,43 @@ struct Dict[K: KeyElement, V: CollectionElement](
         found, slot, index = self._find_index(hash, key)
         if found:
             self._set_index(slot, Self.REMOVED)
-            var entry = self._entries.__get_ref(index)
+            var entry = Reference(self._entries[index])
             debug_assert(entry[].__bool__(), "entry in index must be full")
             var entry_value = entry[].unsafe_take()
             entry[] = None
             self.size -= 1
-            return entry_value.value^
-        elif default:
-            return default.value()[]
+            return entry_value^.reap_value()
         raise "KeyError"
 
-    fn keys(
-        self: Reference[Self, _, _]
-    ) -> _DictKeyIter[K, V, self.is_mutable, self.lifetime]:
+    fn popitem(inout self) raises -> DictEntry[K, V]:
+        """Remove and return a (key, value) pair from the dictionary. Pairs are returned in LIFO order.
+        popitem() is useful to destructively iterate over a dictionary, as often used in set algorithms.
+        If the dictionary is empty, calling popitem() raises a KeyError.
+
+        Args: None
+
+        Returns:
+            Last dictionary item
+
+        Raises:
+            "KeyError" if the dictionary is empty.
+        """
+
+        var key = Optional[K](None)
+        var val = Optional[V](None)
+
+        for item in reversed(self.items()):
+            key = Optional(item[].key)
+            val = Optional(item[].value)
+            break
+
+        if key:
+            _ = self.pop(key.value())
+            return DictEntry[K, V](key.value(), val.value())
+
+        raise "KeyError: popitem(): dictionary is empty"
+
+    fn keys(ref [_]self: Self) -> _DictKeyIter[K, V, __lifetime_of(self)]:
         """Iterate over the dict's keys as immutable references.
 
         Returns:
@@ -800,9 +855,7 @@ struct Dict[K: KeyElement, V: CollectionElement](
         """
         return Self.__iter__(self)
 
-    fn values(
-        self: Reference[Self, _, _]
-    ) -> _DictValueIter[K, V, self.is_mutable, self.lifetime]:
+    fn values(ref [_]self: Self) -> _DictValueIter[K, V, __lifetime_of(self)]:
         """Iterate over the dict's values as references.
 
         Returns:
@@ -810,9 +863,7 @@ struct Dict[K: KeyElement, V: CollectionElement](
         """
         return _DictValueIter(_DictEntryIter(0, 0, self))
 
-    fn items(
-        self: Reference[Self, _, _]
-    ) -> _DictEntryIter[K, V, self.is_mutable, self.lifetime]:
+    fn items(ref [_]self: Self) -> _DictEntryIter[K, V, __lifetime_of(self)]:
         """Iterate over the dict's entries as immutable references.
 
         These can't yet be unpacked like Python dict items, but you can
@@ -842,23 +893,45 @@ struct Dict[K: KeyElement, V: CollectionElement](
         """Remove all elements from the dictionary."""
         self.size = 0
         self._n_entries = 0
-        self._reserved = Self._initial_reservation
-        self._index = _DictIndex(self._reserved)
-        self._entries = Self._new_entries(self._reserved)
+        self._entries = Self._new_entries(Self._initial_reservation)
+        self._index = _DictIndex(self._reserved())
+
+    fn setdefault(
+        inout self, key: K, owned default: V
+    ) raises -> Reference[V, __lifetime_of(self)]:
+        """Get a value from the dictionary by key, or set it to a default if it doesn't exist.
+
+        Args:
+            key: The key to search for in the dictionary.
+            default: The default value to set if the key is not present.
+
+        Returns:
+            The value associated with the key, or the default value if it wasn't present.
+        """
+        try:
+            return self._find_ref(key)
+        except KeyError:
+            self[key] = default^
+            return self._find_ref(key)
 
     @staticmethod
     @always_inline
-    fn _new_entries(reserved: Int) -> List[Optional[DictEntry[K, V]]]:
-        var entries = List[Optional[DictEntry[K, V]]](capacity=reserved)
-        for i in range(reserved):
+    fn _new_entries(reserve_at_least: Int) -> List[Optional[DictEntry[K, V]]]:
+        var entries = List[Optional[DictEntry[K, V]]](capacity=reserve_at_least)
+        # We have memory available, we'll use everything.
+        for i in range(entries.capacity):
             entries.append(None)
         return entries
 
     fn _insert(inout self, owned key: K, owned value: V):
         self._insert(DictEntry[K, V](key^, value^))
 
-    fn _insert(inout self, owned entry: DictEntry[K, V]):
-        self._maybe_resize()
+    fn _insert[
+        safe_context: Bool = False
+    ](inout self, owned entry: DictEntry[K, V]):
+        @parameter
+        if not safe_context:
+            self._maybe_resize()
         var found: Bool
         var slot: Int
         var index: Int
@@ -871,18 +944,18 @@ struct Dict[K: KeyElement, V: CollectionElement](
             self._n_entries += 1
 
     fn _get_index(self, slot: Int) -> Int:
-        return self._index.get_index(self._reserved, slot)
+        return self._index.get_index(self._reserved(), slot)
 
     fn _set_index(inout self, slot: Int, index: Int):
-        return self._index.set_index(self._reserved, slot, index)
+        return self._index.set_index(self._reserved(), slot, index)
 
     fn _next_index_slot(self, inout slot: Int, inout perturb: UInt64):
         alias PERTURB_SHIFT = 5
         perturb >>= PERTURB_SHIFT
-        slot = ((5 * slot) + int(perturb + 1)) % self._reserved
+        slot = ((5 * slot) + int(perturb + 1)) & (self._reserved() - 1)
 
     fn _find_empty_index(self, hash: Int) -> Int:
-        var slot = hash % self._reserved
+        var slot = hash & (self._reserved() - 1)
         var perturb = bitcast[DType.uint64](Int64(hash))
         while True:
             var index = self._get_index(slot)
@@ -892,7 +965,7 @@ struct Dict[K: KeyElement, V: CollectionElement](
 
     fn _find_index(self, hash: Int, key: K) -> (Bool, Int, Int):
         # Return (found, slot, index)
-        var slot = hash % self._reserved
+        var slot = hash & (self._reserved() - 1)
         var perturb = bitcast[DType.uint64](Int64(hash))
         while True:
             var index = self._get_index(slot)
@@ -901,58 +974,57 @@ struct Dict[K: KeyElement, V: CollectionElement](
             elif index == Self.REMOVED:
                 pass
             else:
-                var entry = self._entries.__get_ref(index)
-                debug_assert(entry[].__bool__(), "entry in index must be full")
-                if (
-                    hash == entry[].value()[].hash
-                    and key == entry[].value()[].key
-                ):
+                var entry = self._entries[index]
+                debug_assert(entry.__bool__(), "entry in index must be full")
+                if hash == entry.value().hash and key == entry.value().key:
                     return (True, slot, index)
             self._next_index_slot(slot, perturb)
 
     fn _over_load_factor(self) -> Bool:
-        return 3 * self.size > 2 * self._reserved
+        return 3 * self.size > 2 * self._reserved()
 
     fn _over_compact_factor(self) -> Bool:
-        return 4 * self._n_entries > 3 * self._reserved
+        return 4 * self._n_entries > 3 * self._reserved()
 
     fn _maybe_resize(inout self):
         if not self._over_load_factor():
             if self._over_compact_factor():
                 self._compact()
             return
-        self._reserved *= 2
+        var _reserved = self._reserved() * 2
         self.size = 0
         self._n_entries = 0
-        self._index = _DictIndex(self._reserved)
         var old_entries = self._entries^
-        self._entries = self._new_entries(self._reserved)
+        self._entries = self._new_entries(_reserved)
+        self._index = _DictIndex(self._reserved())
 
         for i in range(len(old_entries)):
-            var entry = old_entries.__get_ref(i)
-            if entry[]:
-                self._insert(entry[].unsafe_take())
+            var entry = old_entries[i]
+            if entry:
+                self._insert[safe_context=True](entry.unsafe_take())
 
     fn _compact(inout self):
-        self._index = _DictIndex(self._reserved)
+        self._index = _DictIndex(self._reserved())
         var right = 0
         for left in range(self.size):
-            while not self._entries.__get_ref(right)[]:
+            while not self._entries[right]:
                 right += 1
-                debug_assert(right < self._reserved, "Invalid dict state")
-            var entry = self._entries.__get_ref(right)
-            debug_assert(entry[].__bool__(), "Logic error")
-            var slot = self._find_empty_index(entry[].value()[].hash)
+                debug_assert(right < self._reserved(), "Invalid dict state")
+            var entry = self._entries[right]
+            debug_assert(entry.__bool__(), "Logic error")
+            var slot = self._find_empty_index(entry.value().hash)
             self._set_index(slot, left)
             if left != right:
-                self._entries[left] = entry[].unsafe_take()
-                entry[] = None
+                self._entries[left] = entry.unsafe_take()
+                entry = None
             right += 1
 
         self._n_entries = self.size
 
 
-struct OwnedKwargsDict[V: CollectionElement](Sized, CollectionElement):
+struct OwnedKwargsDict[V: CollectionElement](
+    Sized, CollectionElement, CollectionElementNew
+):
     """Container used to pass owned variadic keyword arguments to functions.
 
     This type mimics the interface of a dictionary with `String` keys, and
@@ -976,6 +1048,14 @@ struct OwnedKwargsDict[V: CollectionElement](Sized, CollectionElement):
         """Initialize an empty keyword dictionary."""
         self._dict = Dict[Self.key_type, V]()
 
+    fn __init__(inout self, *, other: Self):
+        """Copy an existing keyword dictionary.
+
+        Args:
+            other: The existing keyword dictionary.
+        """
+        self._dict = other._dict
+
     fn __copyinit__(inout self, existing: Self):
         """Copy an existing keyword dictionary.
 
@@ -996,7 +1076,7 @@ struct OwnedKwargsDict[V: CollectionElement](Sized, CollectionElement):
     # Operator dunders
     # ===-------------------------------------------------------------------===#
 
-    @always_inline("nodebug")
+    @always_inline
     fn __getitem__(self, key: Self.key_type) raises -> V:
         """Retrieve a value out of the keyword dictionary.
 
@@ -1011,7 +1091,7 @@ struct OwnedKwargsDict[V: CollectionElement](Sized, CollectionElement):
         """
         return self._dict[key]
 
-    @always_inline("nodebug")
+    @always_inline
     fn __setitem__(inout self, key: Self.key_type, value: V):
         """Set a value in the keyword dictionary by key.
 
@@ -1025,7 +1105,7 @@ struct OwnedKwargsDict[V: CollectionElement](Sized, CollectionElement):
     # Trait implementations
     # ===-------------------------------------------------------------------===#
 
-    @always_inline("nodebug")
+    @always_inline
     fn __contains__(self, key: Self.key_type) -> Bool:
         """Check if a given key is in the keyword dictionary or not.
 
@@ -1038,16 +1118,20 @@ struct OwnedKwargsDict[V: CollectionElement](Sized, CollectionElement):
         """
         return key in self._dict
 
-    @always_inline("nodebug")
+    @always_inline
     fn __len__(self) -> Int:
-        """The number of elements currently stored in the keyword dictionary."""
+        """The number of elements currently stored in the keyword dictionary.
+
+        Returns:
+            The number of elements currently stored in the keyword dictionary.
+        """
         return len(self._dict)
 
     # ===-------------------------------------------------------------------===#
     # Methods
     # ===-------------------------------------------------------------------===#
 
-    @always_inline("nodebug")
+    @always_inline
     fn find(self, key: Self.key_type) -> Optional[V]:
         """Find a value in the keyword dictionary by key.
 
@@ -1060,30 +1144,40 @@ struct OwnedKwargsDict[V: CollectionElement](Sized, CollectionElement):
         """
         return self._dict.find(key)
 
-    @always_inline("nodebug")
-    fn pop(
-        inout self, key: self.key_type, owned default: Optional[V] = None
-    ) raises -> V:
-        """Remove a value from the keyword dictionary by key.
+    @always_inline
+    fn pop(inout self, key: self.key_type, owned default: V) -> V:
+        """Remove a value from the dictionary by key.
 
         Args:
             key: The key to remove from the dictionary.
-            default: Optionally provide a default value to return if the key
+            default: A default value to return if the key
                 was not found instead of raising.
 
         Returns:
             The value associated with the key, if it was in the dictionary.
             If it wasn't, return the provided default value instead.
-
-        Raises:
-            "KeyError" if the key was not present in the dictionary and no
-            default value was provided.
         """
         return self._dict.pop(key, default^)
 
+    @always_inline
+    fn pop(inout self, key: self.key_type) raises -> V:
+        """Remove a value from the dictionary by key.
+
+        Args:
+            key: The key to remove from the dictionary.
+
+        Returns:
+            The value associated with the key, if it was in the dictionary.
+            Raises otherwise.
+
+        Raises:
+            "KeyError" if the key was not present in the dictionary.
+        """
+        return self._dict.pop(key)
+
     fn __iter__(
-        self: Reference[Self, _, _]
-    ) -> _DictKeyIter[Self.key_type, V, self.is_mutable, self.lifetime]:
+        ref [_]self: Self,
+    ) -> _DictKeyIter[Self.key_type, V, __lifetime_of(self._dict)]:
         """Iterate over the keyword dict's keys as immutable references.
 
         Returns:
@@ -1091,11 +1185,11 @@ struct OwnedKwargsDict[V: CollectionElement](Sized, CollectionElement):
         """
         # TODO(#36448): Use this instead of the current workaround
         # return self._dict.__iter__()
-        return _DictKeyIter(_DictEntryIter(0, 0, self[]._dict))
+        return _DictKeyIter(_DictEntryIter(0, 0, self._dict))
 
     fn keys(
-        self: Reference[Self, _, _],
-    ) -> _DictKeyIter[Self.key_type, V, self.is_mutable, self.lifetime]:
+        ref [_]self: Self,
+    ) -> _DictKeyIter[Self.key_type, V, __lifetime_of(self._dict)]:
         """Iterate over the keyword dict's keys as immutable references.
 
         Returns:
@@ -1106,8 +1200,8 @@ struct OwnedKwargsDict[V: CollectionElement](Sized, CollectionElement):
         return Self.__iter__(self)
 
     fn values(
-        self: Reference[Self, _, _],
-    ) -> _DictValueIter[Self.key_type, V, self.is_mutable, self.lifetime]:
+        ref [_]self: Self,
+    ) -> _DictValueIter[Self.key_type, V, __lifetime_of(self._dict)]:
         """Iterate over the keyword dict's values as references.
 
         Returns:
@@ -1115,11 +1209,11 @@ struct OwnedKwargsDict[V: CollectionElement](Sized, CollectionElement):
         """
         # TODO(#36448): Use this instead of the current workaround
         # return self._dict.values()
-        return _DictValueIter(_DictEntryIter(0, 0, self[]._dict))
+        return _DictValueIter(_DictEntryIter(0, 0, self._dict))
 
     fn items(
-        self: Reference[Self, _, _]
-    ) -> _DictEntryIter[Self.key_type, V, self.is_mutable, self.lifetime]:
+        ref [_]self: Self,
+    ) -> _DictEntryIter[Self.key_type, V, __lifetime_of(self._dict)]:
         """Iterate over the keyword dictionary's entries as immutable references.
 
         These can't yet be unpacked like Python dict items, but you can
@@ -1136,12 +1230,12 @@ struct OwnedKwargsDict[V: CollectionElement](Sized, CollectionElement):
 
         # TODO(#36448): Use this instead of the current workaround
         # return self[]._dict.items()
-        return _DictEntryIter(0, 0, self[]._dict)
+        return _DictEntryIter(0, 0, self._dict)
 
-    @always_inline("nodebug")
+    @always_inline
     fn _insert(inout self, owned key: Self.key_type, owned value: V):
         self._dict._insert(key^, value^)
 
-    @always_inline("nodebug")
+    @always_inline
     fn _insert(inout self, key: StringLiteral, owned value: V):
         self._insert(String(key), value^)

@@ -119,6 +119,8 @@ accepted. For example:
 
 - Changes that do not align with the published roadmap or the core principles of
   the standard library.
+- Changes to the math module until more thorough performance
+  benchmarking is available.
 - Code without tests—especially for core primitives.
 - Changes that break existing API or implicit behavior semantics.
 - Changes where the contributors’ favorite feature or system isn’t being used
@@ -138,7 +140,7 @@ We ask that contributors make pull requests as small as possible. When
 you are opening a pull request, check the number of lines modified in GitHub.
 The smaller the better (but don't exclude the tests or docstrings). If your
 pull request is over 100 lines, please try to split it into multiple pull
-requests. If you make them independant, it's even better as no synchronization
+requests. If you make them independent, it's even better as no synchronization
 will be needed for the merge.
 
 This guideline is here for the following reasons:

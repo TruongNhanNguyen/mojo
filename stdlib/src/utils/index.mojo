@@ -21,7 +21,7 @@ from utils import StaticIntTuple
 """
 
 from builtin.io import _get_dtype_printf_format, _snprintf
-from builtin.string import _calc_initial_buffer_size
+from collections.string import _calc_initial_buffer_size
 
 from . import unroll
 from .static_tuple import StaticTuple
@@ -29,9 +29,6 @@ from .static_tuple import StaticTuple
 # ===----------------------------------------------------------------------===#
 # Utilities
 # ===----------------------------------------------------------------------===#
-
-
-alias mlir_bool = __mlir_type.`!pop.scalar<bool>`
 
 
 @always_inline
@@ -83,14 +80,11 @@ fn _int_tuple_binary_apply[
 
     var c = StaticTuple[Int, size]()
 
-    @always_inline
     @parameter
-    fn do_apply[idx: Int]():
-        var a_elem: Int = a.__getitem__[idx]()
-        var b_elem: Int = b.__getitem__[idx]()
-        c.__setitem__[idx](binary_fn(a_elem, b_elem))
-
-    unroll[do_apply, size]()
+    for i in range(size):
+        var a_elem = a.__getitem__[i]()
+        var b_elem = b.__getitem__[i]()
+        c.__setitem__[i](binary_fn(a_elem, b_elem))
 
     return c
 
@@ -100,8 +94,7 @@ fn _int_tuple_compare[
     size: Int,
     comp_fn: fn (Int, Int) -> Bool,
 ](a: StaticTuple[Int, size], b: StaticTuple[Int, size]) -> StaticTuple[
-    mlir_bool,
-    size,
+    Bool, size
 ]:
     """Applies a given element compare function to each pair of corresponding
     elements in two tuples and produces a tuple of Bools containing result.
@@ -123,16 +116,13 @@ fn _int_tuple_compare[
         Tuple containing the result.
     """
 
-    var c = StaticTuple[mlir_bool, size]()
+    var c = StaticTuple[Bool, size]()
 
-    @always_inline
     @parameter
-    fn do_compare[idx: Int]():
-        var a_elem: Int = a.__getitem__[idx]()
-        var b_elem: Int = b.__getitem__[idx]()
-        c.__setitem__[idx](comp_fn(a_elem, b_elem)._as_scalar_bool())
-
-    unroll[do_compare, size]()
+    for i in range(size):
+        var a_elem: Int = a.__getitem__[i]()
+        var b_elem: Int = b.__getitem__[i]()
+        c.__setitem__[i](comp_fn(a_elem, b_elem))
 
     return c
 
@@ -141,12 +131,12 @@ fn _int_tuple_compare[
 fn _bool_tuple_reduce[
     size: Int,
     reduce_fn: fn (Bool, Bool) -> Bool,
-](a: StaticTuple[mlir_bool, size], init: Bool) -> Bool:
+](a: StaticTuple[Bool, size], init: Bool) -> Bool:
     """Reduces the tuple argument with the given reduce function and initial
     value.
 
     Example Usage:
-        var a: StaticTuple[mlir_bool, size]
+        var a: StaticTuple[Bool, size]
         var c = _bool_tuple_reduce[size, _reduce_and_fn](a, True)
 
     Parameters:
@@ -163,12 +153,9 @@ fn _bool_tuple_reduce[
 
     var c: Bool = init
 
-    @always_inline
     @parameter
-    fn do_reduce[idx: Int]():
-        c = reduce_fn(c, a.__getitem__[idx]())
-
-    unroll[do_reduce, size]()
+    for i in range(size):
+        c = reduce_fn(c, a.__getitem__[i]())
 
     return c
 
@@ -180,7 +167,12 @@ fn _bool_tuple_reduce[
 
 @value
 @register_passable("trivial")
-struct StaticIntTuple[size: Int](Sized, Stringable, Comparable):
+struct StaticIntTuple[size: Int](
+    Sized,
+    Stringable,
+    Formattable,
+    Comparable,
+):
     """A base struct that implements size agnostic index functions.
 
     Parameters:
@@ -224,7 +216,7 @@ struct StaticIntTuple[size: Int](Sized, Stringable, Comparable):
 
         @parameter
         fn fill[idx: Int]():
-            tup[idx] = rebind[Reference[Int, False, __lifetime_of(elems)]](
+            tup[idx] = rebind[Reference[Int, __lifetime_of(elems)]](
                 Reference(elems[idx])
             )[]
 
@@ -251,7 +243,7 @@ struct StaticIntTuple[size: Int](Sized, Stringable, Comparable):
 
         @parameter
         fn fill[idx: Int]():
-            tup[idx] = rebind[Reference[Int, False, __lifetime_of(elems)]](
+            tup[idx] = rebind[Reference[Int, __lifetime_of(elems)]](
                 Reference(elems[idx])
             )[]
 
@@ -278,7 +270,7 @@ struct StaticIntTuple[size: Int](Sized, Stringable, Comparable):
 
         @parameter
         fn fill[idx: Int]():
-            tup[idx] = rebind[Reference[Int, False, __lifetime_of(elems)]](
+            tup[idx] = rebind[Reference[Int, __lifetime_of(elems)]](
                 Reference(elems[idx])
             )[]
 
@@ -320,6 +312,14 @@ struct StaticIntTuple[size: Int](Sized, Stringable, Comparable):
         self.data = __mlir_op.`pop.array.repeat`[
             _type = __mlir_type[`!pop.array<`, size.value, `, `, Int, `>`]
         ](elem)
+
+    fn __init__(inout self, *, other: Self):
+        """Copy constructor.
+
+        Args:
+            other: The other tuple to copy from.
+        """
+        self.data = StaticTuple[Int, size](other=other.data)
 
     @always_inline
     fn __init__(inout self, values: VariadicList[Int]):
@@ -637,6 +637,7 @@ struct StaticIntTuple[size: Int](Sized, Stringable, Comparable):
             _int_tuple_compare[size, apply_fn](self.data, rhs.data), True
         )
 
+    @no_inline
     fn __str__(self) -> String:
         """Get the tuple as a string.
 
@@ -669,6 +670,18 @@ struct StaticIntTuple[size: Int](Sized, Stringable, Comparable):
         buf.size += 1  # for the null terminator.
         return buf^
 
+    @no_inline
+    fn format_to(self, inout writer: Formatter):
+        """
+        Formats this int tuple to the provided formatter.
+
+        Args:
+            writer: The formatter to write to.
+        """
+
+        # TODO: Optimize this to avoid the intermediate String allocation.
+        writer.write(str(self))
+
 
 # ===----------------------------------------------------------------------===#
 # Factory functions for creating index.
@@ -690,6 +703,19 @@ fn Index[T0: Intable](x: T0) -> StaticIntTuple[1]:
 
 
 @always_inline
+fn Index(x: UInt) -> StaticIntTuple[1]:
+    """Constructs a 1-D Index from the given value.
+
+    Args:
+        x: The initial value.
+
+    Returns:
+        The constructed StaticIntTuple.
+    """
+    return StaticIntTuple[1](x.value)
+
+
+@always_inline
 fn Index[T0: Intable, T1: Intable](x: T0, y: T1) -> StaticIntTuple[2]:
     """Constructs a 2-D Index from the given values.
 
@@ -705,6 +731,20 @@ fn Index[T0: Intable, T1: Intable](x: T0, y: T1) -> StaticIntTuple[2]:
         The constructed StaticIntTuple.
     """
     return StaticIntTuple[2](int(x), int(y))
+
+
+@always_inline
+fn Index(x: UInt, y: UInt) -> StaticIntTuple[2]:
+    """Constructs a 2-D Index from the given values.
+
+    Args:
+        x: The 1st initial value.
+        y: The 2nd initial value.
+
+    Returns:
+        The constructed StaticIntTuple.
+    """
+    return StaticIntTuple[2](x.value, y.value)
 
 
 @always_inline

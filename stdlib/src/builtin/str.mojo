@@ -23,7 +23,7 @@ These are Mojo built-ins, so you don't need to import them.
 trait Stringable:
     """
     The `Stringable` trait describes a type that can be converted to a
-    [`String`](/mojo/stdlib/builtin/string/String).
+    [`String`](/mojo/stdlib/collections/string/String).
 
     Any type that conforms to `Stringable` or
     [`StringableRaising`](/mojo/stdlib/builtin/str/StringableRaising) works
@@ -77,7 +77,7 @@ trait Stringable:
 
 trait StringableRaising:
     """The StringableRaising trait describes a type that can be converted to a
-    [`String`](/mojo/stdlib/builtin/string/String).
+    [`String`](/mojo/stdlib/collections/string/String).
 
     Any type that conforms to
     [`Stringable`](/mojo/stdlib/builtin/str/Stringable) or
@@ -130,7 +130,7 @@ trait StringableRaising:
 # ===----------------------------------------------------------------------=== #
 
 
-@always_inline
+@no_inline
 fn str[T: Stringable](value: T) -> String:
     """Get the string representation of a value.
 
@@ -146,7 +146,7 @@ fn str[T: Stringable](value: T) -> String:
     return value.__str__()
 
 
-@always_inline
+@no_inline
 fn str(value: None) -> String:
     """Get the string representation of the `None` type.
 
@@ -159,7 +159,7 @@ fn str(value: None) -> String:
     return "None"
 
 
-@always_inline
+@no_inline
 fn str[T: StringableRaising](value: T) raises -> String:
     """Get the string representation of a value.
 

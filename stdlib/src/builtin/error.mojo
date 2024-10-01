@@ -17,8 +17,8 @@ These are Mojo built-ins, so you don't need to import them.
 
 from sys import alignof, sizeof
 
+from memory import UnsafePointer, memcpy
 from memory.memory import _free
-from memory import memcmp, memcpy, UnsafePointer
 
 # ===----------------------------------------------------------------------===#
 # Error
@@ -26,7 +26,14 @@ from memory import memcmp, memcpy, UnsafePointer
 
 
 @register_passable
-struct Error(Stringable, Boolable):
+struct Error(
+    Stringable,
+    Boolable,
+    Representable,
+    Formattable,
+    CollectionElement,
+    CollectionElementNew,
+):
     """This type represents an Error."""
 
     var data: UnsafePointer[UInt8]
@@ -40,61 +47,44 @@ struct Error(Stringable, Boolable):
     ownership and a free is executed in the destructor.
     """
 
-    @always_inline("nodebug")
-    fn __init__() -> Error:
-        """Default constructor.
+    @always_inline
+    fn __init__(inout self):
+        """Default constructor."""
+        self.data = UnsafePointer[UInt8]()
+        self.loaded_length = 0
 
-        Returns:
-            The constructed Error object.
-        """
-        return Error {data: UnsafePointer[UInt8](), loaded_length: 0}
-
-    @always_inline("nodebug")
-    fn __init__(value: StringLiteral) -> Error:
+    @always_inline
+    fn __init__(inout self, value: StringLiteral):
         """Construct an Error object with a given string literal.
 
         Args:
             value: The error message.
-
-        Returns:
-            The constructed Error object.
         """
-        return Error {
-            # TODO: Remove cast once string UInt8 transition is complete.
-            data: value.unsafe_ptr().bitcast[UInt8](),
-            loaded_length: len(value),
-        }
+        self.data = value.unsafe_ptr()
+        self.loaded_length = len(value)
 
-    @always_inline("nodebug")
-    fn __init__(src: String) -> Error:
+    fn __init__(inout self, src: String):
         """Construct an Error object with a given string.
 
         Args:
             src: The error message.
-
-        Returns:
-            The constructed Error object.
         """
-        var length = len(src)
+        var length = src.byte_length()
         var dest = UnsafePointer[UInt8].alloc(length + 1)
         memcpy(
             dest=dest,
-            # TODO: Remove cast once string UInt8 transition is complete.
-            src=src.unsafe_ptr().bitcast[UInt8](),
+            src=src.unsafe_ptr(),
             count=length,
         )
         dest[length] = 0
-        return Error {data: dest, loaded_length: -length}
+        self.data = dest
+        self.loaded_length = -length
 
-    @always_inline("nodebug")
-    fn __init__(src: StringRef) -> Error:
+    fn __init__(inout self, src: StringRef):
         """Construct an Error object with a given string ref.
 
         Args:
             src: The error message.
-
-        Returns:
-            The constructed Error object.
         """
         var length = len(src)
         var dest = UnsafePointer[UInt8].alloc(length + 1)
@@ -104,30 +94,37 @@ struct Error(Stringable, Boolable):
             count=length,
         )
         dest[length] = 0
-        return Error {data: dest, loaded_length: -length}
+        self.data = dest
+        self.loaded_length = -length
+
+    fn __init__(inout self, *, other: Self):
+        """Copy the object.
+
+        Args:
+            other: The value to copy.
+        """
+        self = other
 
     fn __del__(owned self):
         """Releases memory if allocated."""
         if self.loaded_length < 0:
             self.data.free()
 
-    @always_inline("nodebug")
-    fn __copyinit__(existing: Self) -> Self:
+    fn __copyinit__(inout self, existing: Self):
         """Creates a deep copy of an existing error.
 
-        Returns:
-            The copy of the original error.
+        Args:
+            existing: The error to copy from.
         """
         if existing.loaded_length < 0:
             var length = -existing.loaded_length
             var dest = UnsafePointer[UInt8].alloc(length + 1)
             memcpy(dest, existing.data, length)
             dest[length] = 0
-            return Error {data: dest, loaded_length: existing.loaded_length}
+            self.data = dest
         else:
-            return Error {
-                data: existing.data, loaded_length: existing.loaded_length
-            }
+            self.data = existing.data
+        self.loaded_length = existing.loaded_length
 
     fn __bool__(self) -> Bool:
         """Returns True if the error is set and false otherwise.
@@ -137,23 +134,36 @@ struct Error(Stringable, Boolable):
         """
         return self.data.__bool__()
 
+    @no_inline
     fn __str__(self) -> String:
         """Converts the Error to string representation.
 
         Returns:
             A String of the error message.
         """
-        return self._message()
+        return String.format_sequence(self)
 
+    @no_inline
+    fn format_to(self, inout writer: Formatter):
+        """
+        Formats this error to the provided formatter.
+
+        Args:
+            writer: The formatter to write to.
+        """
+
+        # TODO: Avoid this unnecessary intermediate String allocation.
+        writer.write(self._message())
+
+    @no_inline
     fn __repr__(self) -> String:
         """Converts the Error to printable representation.
 
         Returns:
             A printable representation of the error message.
         """
-        return str(self)
+        return "Error(" + repr(self._message()) + ")"
 
-    @always_inline
     fn _message(self) -> String:
         """Converts the Error to string representation.
 
@@ -167,3 +177,9 @@ struct Error(Stringable, Boolable):
         if length < 0:
             length = -length
         return String(StringRef(self.data, length))
+
+
+@export("__mojo_debugger_raise_hook")
+fn __mojo_debugger_raise_hook():
+    """This function is used internally by the Mojo Debugger."""
+    pass

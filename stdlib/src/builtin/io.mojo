@@ -17,20 +17,19 @@ These are Mojo built-ins, so you don't need to import them.
 
 from sys import (
     bitwidthof,
-    os_is_windows,
-    triple_is_nvidia_cuda,
     external_call,
+    os_is_windows,
     stdout,
+    triple_is_nvidia_cuda,
 )
 
-from builtin.dtype import _get_dtype_printf_format
 from builtin.builtin_list import _LITRefPackHelper
+from builtin.dtype import _get_dtype_printf_format
 from builtin.file_descriptor import FileDescriptor
 from memory import UnsafePointer
 
-from utils import StringRef, unroll
-from utils._format import Formattable, Formatter, write_to
-
+from utils import StringRef, StaticString, StringSlice
+from utils import Formattable, Formatter
 
 # ===----------------------------------------------------------------------=== #
 #  _file_handle
@@ -47,9 +46,7 @@ fn _dup(fd: Int32) -> Int32:
 
 @value
 @register_passable("trivial")
-struct _fdopen:
-    alias STDOUT = 1
-    alias STDERR = 2
+struct _fdopen[mode: StringLiteral = "a"]:
     var handle: UnsafePointer[NoneType]
 
     fn __init__(inout self, stream_id: FileDescriptor):
@@ -58,26 +55,98 @@ struct _fdopen:
         Args:
             stream_id: The stream id
         """
-        alias mode = "a"
-        var handle: UnsafePointer[NoneType]
 
         @parameter
         if os_is_windows():
-            handle = external_call["_fdopen", UnsafePointer[NoneType]](
-                _dup(stream_id.value), mode.unsafe_ptr()
+            self.handle = external_call["_fdopen", UnsafePointer[NoneType]](
+                _dup(stream_id.value), mode.unsafe_cstr_ptr()
             )
         else:
-            handle = external_call["fdopen", UnsafePointer[NoneType]](
-                _dup(stream_id.value), mode.unsafe_ptr()
+            self.handle = external_call["fdopen", UnsafePointer[NoneType]](
+                _dup(stream_id.value), mode.unsafe_cstr_ptr()
             )
-        self.handle = handle
 
     fn __enter__(self) -> Self:
+        """Open the file handle for use within a context manager"""
         return self
 
     fn __exit__(self):
         """Closes the file handle."""
         _ = external_call["fclose", Int32](self.handle)
+
+    fn readline(self) -> String:
+        """Reads an entire line from stdin or until EOF. Lines are delimited by a newline character.
+
+        Returns:
+            The line read from the stdin.
+
+        Examples:
+
+        ```mojo
+        from builtin.io import _fdopen
+
+        var line = _fdopen["r"](0).readline()
+        print(line)
+        ```
+
+        Assuming the above program is named `my_program.mojo`, feeding it `Hello, World` via stdin would output:
+
+        ```bash
+        echo "Hello, World" | mojo run my_program.mojo
+
+        # Output from print:
+        Hello, World
+        ```
+        .
+        """
+        return self.read_until_delimiter("\n")
+
+    fn read_until_delimiter(self, delimiter: String) -> String:
+        """Reads an entire line from a stream, up to the `delimiter`.
+        Does not include the delimiter in the result.
+
+        Args:
+            delimiter: The delimiter to read until.
+
+        Returns:
+            The text read from the stdin.
+
+        Examples:
+
+        ```mojo
+        from builtin.io import _fdopen
+
+        var line = _fdopen["r"](0).read_until_delimiter(",")
+        print(line)
+        ```
+
+        Assuming the above program is named `my_program.mojo`, feeding it `Hello, World` via stdin would output:
+
+        ```bash
+        echo "Hello, World" | mojo run my_program.mojo
+
+        # Output from print:
+        Hello
+        ```
+        """
+        # getdelim will resize the buffer as needed.
+        var buffer = UnsafePointer[UInt8].alloc(1)
+        var bytes_read = external_call[
+            "getdelim",
+            Int,
+            UnsafePointer[UnsafePointer[UInt8]],
+            UnsafePointer[UInt32],
+            Int,
+            UnsafePointer[NoneType],
+        ](
+            UnsafePointer[UnsafePointer[UInt8]].address_of(buffer),
+            UnsafePointer[UInt32].address_of(UInt32(1)),
+            ord(delimiter),
+            self.handle,
+        )
+        # Overwrite the delimiter with a null terminator.
+        buffer[bytes_read - 1] = 0
+        return String(buffer, bytes_read)
 
 
 # ===----------------------------------------------------------------------=== #
@@ -88,7 +157,7 @@ struct _fdopen:
 @no_inline
 fn _flush(file: FileDescriptor = stdout):
     with _fdopen(file) as fd:
-        _ = external_call["fflush", Int32](fd)
+        _ = external_call["fflush", Int32](fd.handle)
 
 
 # ===----------------------------------------------------------------------=== #
@@ -101,19 +170,16 @@ fn _printf[
     fmt: StringLiteral, *types: AnyType
 ](*arguments: *types, file: FileDescriptor = stdout):
     # The argument pack will contain references for each value in the pack,
-    # but we want to pass their values directly into the C snprintf call. Load
+    # but we want to pass their values directly into the C printf call. Load
     # all the members of the pack.
-    var kgen_pack = _LITRefPackHelper(arguments._value).get_as_kgen_pack()
-
-    # FIXME(37129): Cannot use get_loaded_kgen_pack because vtables on types
-    # aren't stripped off correctly.
-    var loaded_pack = __mlir_op.`kgen.pack.load`(kgen_pack)
+    var loaded_pack = _LITRefPackHelper(arguments._value).get_loaded_kgen_pack()
 
     @parameter
     if triple_is_nvidia_cuda():
         _ = external_call["vprintf", Int32](
-            fmt.unsafe_ptr(), UnsafePointer.address_of(loaded_pack)
+            fmt.unsafe_cstr_ptr(), Reference(loaded_pack)
         )
+        _ = loaded_pack
     else:
         with _fdopen(file) as fd:
             _ = __mlir_op.`pop.external_call`[
@@ -125,7 +191,7 @@ fn _printf[
                     `) -> !pop.scalar<si32>`,
                 ],
                 _type=Int32,
-            ](fd, fmt.unsafe_ptr(), loaded_pack)
+            ](fd, fmt.unsafe_cstr_ptr(), loaded_pack)
 
 
 # ===----------------------------------------------------------------------=== #
@@ -154,11 +220,7 @@ fn _snprintf[
     # The argument pack will contain references for each value in the pack,
     # but we want to pass their values directly into the C snprintf call. Load
     # all the members of the pack.
-    var kgen_pack = _LITRefPackHelper(arguments._value).get_as_kgen_pack()
-
-    # FIXME(37129): Cannot use get_loaded_kgen_pack because vtables on types
-    # aren't stripped off correctly.
-    var loaded_pack = __mlir_op.`kgen.pack.load`(kgen_pack)
+    var loaded_pack = _LITRefPackHelper(arguments._value).get_loaded_kgen_pack()
 
     return int(
         __mlir_op.`pop.external_call`[
@@ -171,7 +233,7 @@ fn _snprintf[
                 `) -> !pop.scalar<si32>`,
             ],
             _type=Int32,
-        ](str, size, fmt.unsafe_ptr(), loaded_pack)
+        ](str, size, fmt.unsafe_cstr_ptr(), loaded_pack)
     )
 
 
@@ -181,19 +243,19 @@ fn _snprintf_scalar[
     float_format: StringLiteral = "%.17g",
 ](buffer: UnsafePointer[UInt8], size: Int, x: Scalar[type]) -> Int:
     @parameter
-    if type == DType.bool:
+    if type is DType.bool:
         if x:
             return _snprintf["True"](buffer, size)
         else:
             return _snprintf["False"](buffer, size)
-    elif type.is_integral() or type == DType.address:
+    elif type.is_integral():
         return _snprintf[_get_dtype_printf_format[type]()](buffer, size, x)
     elif (
-        type == DType.float16 or type == DType.bfloat16 or type == DType.float32
+        type is DType.float16 or type is DType.bfloat16 or type is DType.float32
     ):
         # We need to cast the value to float64 to print it.
         return _float_repr[float_format](buffer, size, x.cast[DType.float64]())
-    elif type == DType.float64:
+    elif type is DType.float64:
         return _float_repr[float_format](buffer, size, rebind[Float64](x))
     return 0
 
@@ -238,120 +300,50 @@ fn _float_repr[
 # ===----------------------------------------------------------------------=== #
 
 
-@no_inline
-fn _put(x: Int, file: FileDescriptor = stdout):
-    """Prints a scalar value.
+fn _put(strref: StringRef, file: FileDescriptor = stdout):
+    var str_slice = StringSlice[ImmutableStaticLifetime](
+        unsafe_from_utf8_strref=strref
+    )
 
-    Args:
-        x: The value to print.
-        file: The output stream.
-    """
-    _printf[_get_dtype_printf_format[DType.index]()](x, file=file)
+    _put(str_slice, file=file)
 
 
 @no_inline
-fn _put_simd_scalar[type: DType](x: Scalar[type]):
-    """Prints a scalar value.
-
-    Parameters:
-        type: The DType of the value.
-
-    Args:
-        x: The value to print.
-    """
-    alias format = _get_dtype_printf_format[type]()
-
-    @parameter
-    if type == DType.bool:
-        _put["True"]() if x else _put["False"]()
-    elif type.is_integral() or type == DType.address:
-        _printf[format](x)
-    elif type.is_floating_point():
-
-        @parameter
-        if triple_is_nvidia_cuda():
-            _printf[format](x.cast[DType.float64]())
-        else:
-            _put(str(x))
-    else:
-        constrained[False, "invalid dtype"]()
-
-
-@no_inline
-fn _put[type: DType, simd_width: Int](x: SIMD[type, simd_width]):
-    """Prints a scalar value.
-
-    Parameters:
-        type: The DType of the value.
-        simd_width: The SIMD width.
-
-    Args:
-        x: The value to print.
-    """
-    alias format = _get_dtype_printf_format[type]()
-
-    @parameter
-    if simd_width == 1:
-        _put_simd_scalar(x[0])
-    elif type.is_integral():
-        _put["["]()
-
-        @parameter
-        for i in range(simd_width):
-            _put_simd_scalar(x[i])
-            if i != simd_width - 1:
-                _put[", "]()
-        _put["]"]()
-    else:
-        _put(str(x))
-
-
-@no_inline
-fn _put(x: String, file: FileDescriptor = stdout):
-    # 'x' is borrowed, so we know it will outlive the call to print.
-    _put(x._strref_dangerous(), file=file)
-
-
-@no_inline
-fn _put(x: StringRef, file: FileDescriptor = stdout):
+fn _put[
+    lif: ImmutableLifetime, //
+](x: StringSlice[lif], file: FileDescriptor = stdout):
     # Avoid printing "(null)" for an empty/default constructed `String`
-    var str_len = len(x)
+    var str_len = x.byte_length()
 
     if not str_len:
         return
 
     @parameter
     if triple_is_nvidia_cuda():
+        # Note:
+        #   This assumes that the `StringSlice` that was passed in is NUL
+        #   terminated.
         var tmp = 0
         var arg_ptr = UnsafePointer.address_of(tmp)
         _ = external_call["vprintf", Int32](
-            x.data, arg_ptr.bitcast[UnsafePointer[NoneType]]()
+            x.unsafe_ptr(), arg_ptr.bitcast[UnsafePointer[NoneType]]()
         )
+        _ = tmp
     else:
         alias MAX_STR_LEN = 0x1000_0000
 
         # The string can be printed, so that's fine.
         if str_len < MAX_STR_LEN:
-            _printf["%.*s"](x.length, x.data, file=file)
+            _printf["%.*s"](x.byte_length(), x.unsafe_ptr(), file=file)
             return
 
         # The string is large, then we need to chunk it.
-        var p = x.data
+        var p = x.unsafe_ptr()
         while str_len:
             var ll = min(str_len, MAX_STR_LEN)
             _printf["%.*s"](ll, p, file=file)
             str_len -= ll
             p += ll
-
-
-@no_inline
-fn _put[x: StringLiteral](file: FileDescriptor = stdout):
-    _put(StringRef(x), file=file)
-
-
-@no_inline
-fn _put(x: DType, file: FileDescriptor = stdout):
-    _put(str(x), file=file)
 
 
 # ===----------------------------------------------------------------------=== #
@@ -361,74 +353,11 @@ fn _put(x: DType, file: FileDescriptor = stdout):
 
 @no_inline
 fn print[
-    *Ts: Stringable
-](*values: *Ts, flush: Bool = False, file: FileDescriptor = stdout):
-    """Prints elements to the text stream. Each element is separated by a
-    whitespace and followed by a newline character.
-
-    Parameters:
-        Ts: The elements types.
-
-    Args:
-        values: The elements to print.
-        flush: If set to true, then the stream is forcibly flushed.
-        file: The output stream.
-    """
-    _print(values, sep=" ", end="\n", flush=flush, file=file)
-
-
-@no_inline
-fn print[
-    *Ts: Stringable, EndTy: Stringable
+    *Ts: Formattable
 ](
     *values: *Ts,
-    end: EndTy,
-    flush: Bool = False,
-    file: FileDescriptor = stdout,
-):
-    """Prints elements to the text stream. Each element is separated by a
-    whitespace and followed by `end`.
-
-    Parameters:
-        Ts: The elements types.
-        EndTy: The type of end argument.
-
-    Args:
-        values: The elements to print.
-        end: The String to write after printing the elements.
-        flush: If set to true, then the stream is forcibly flushed.
-        file: The output stream.
-    """
-    _print(values, sep=" ", end=str(end), flush=flush, file=file)
-
-
-@no_inline
-fn print[
-    SepTy: Stringable, *Ts: Stringable
-](*values: *Ts, sep: SepTy, flush: Bool = False, file: FileDescriptor = stdout):
-    """Prints elements to the text stream. Each element is separated by `sep`
-    and followed by a newline character.
-
-    Parameters:
-        SepTy: The type of separator.
-        Ts: The elements types.
-
-    Args:
-        values: The elements to print.
-        sep: The separator used between elements.
-        flush: If set to true, then the stream is forcibly flushed.
-        file: The output stream.
-    """
-    _print(values, sep=str(sep), end="\n", flush=flush, file=file)
-
-
-@no_inline
-fn print[
-    SepTy: Stringable, EndTy: Stringable, *Ts: Stringable
-](
-    *values: *Ts,
-    sep: SepTy,
-    end: EndTy,
+    sep: StaticString = " ",
+    end: StaticString = "\n",
     flush: Bool = False,
     file: FileDescriptor = stdout,
 ):
@@ -436,8 +365,6 @@ fn print[
     and followed by `end`.
 
     Parameters:
-        SepTy: The type of separator.
-        EndTy: The type of end argument.
         Ts: The elements types.
 
     Args:
@@ -447,84 +374,53 @@ fn print[
         flush: If set to true, then the stream is forcibly flushed.
         file: The output stream.
     """
-    _print(values, sep=str(sep), end=str(end), flush=flush, file=file)
 
+    var writer = Formatter(fd=file)
 
-@no_inline
-fn _print[
-    *Ts: Stringable
-](
-    values: VariadicPack[_, _, Stringable, Ts],
-    *,
-    sep: String,
-    end: String,
-    flush: Bool,
-    file: FileDescriptor,
-):
     @parameter
-    fn print_with_separator[i: Int, T: Stringable](value: T):
-        _put(str(value), file=file)
+    fn print_with_separator[i: Int, T: Formattable](value: T):
+        writer.write(value)
 
         @parameter
-        if i < values.__len__() - 1:
-            _put(sep, file=file)
+        if i < len(VariadicList(Ts)) - 1:
+            writer.write(sep)
 
     values.each_idx[print_with_separator]()
 
-    _put(end, file=file)
-    if flush:
-        _flush(file=file)
-
-
-# ===----------------------------------------------------------------------=== #
-#  print_fmt
-# ===----------------------------------------------------------------------=== #
-
-
-# TODO:
-#   Finish transition to using non-allocating formatting abstractions by
-#   default, replace `print` with this function.
-@no_inline
-fn _print_fmt[
-    T: Formattable, *Ts: Formattable
-](
-    first: T,
-    *rest: *Ts,
-    sep: StringLiteral = " ",
-    end: StringLiteral = "\n",
-    flush: Bool = False,
-):
-    """Prints elements to the text stream. Each element is separated by `sep`
-    and followed by `end`.
-
-    This print function does not perform unnecessary intermediate String
-    allocations during formatting.
-
-    Parameters:
-        T: The first element type.
-        Ts: The remaining element types.
-
-    Args:
-        first: The first element.
-        rest: The remaining elements.
-        sep: The separator used between elements.
-        end: The String to write after printing the elements.
-        flush: If set to true, then the stream is forcibly flushed.
-    """
-    var writer = Formatter.stdout()
-
-    write_to(writer, first)
-
-    @parameter
-    fn print_elt[T: Formattable](a: T):
-        write_to(writer, sep, a)
-
-    rest.each[print_elt]()
-
-    write_to(writer, end)
+    writer.write(end)
 
     # TODO: What is a flush function that works on CUDA?
     @parameter
     if not triple_is_nvidia_cuda():
         if flush:
-            _flush()
+            _flush(file=file)
+
+
+# ===----------------------------------------------------------------------=== #
+#  input
+# ===----------------------------------------------------------------------=== #
+
+
+fn input(prompt: String = "") -> String:
+    """Reads a line of input from the user.
+
+    Reads a line from standard input, converts it to a string, and returns that string.
+    If the prompt argument is present, it is written to standard output without a trailing newline.
+
+    Args:
+        prompt: An optional string to be printed before reading input.
+
+    Returns:
+        A string containing the line read from the user input.
+
+    Examples:
+    ```mojo
+    name = input("Enter your name: ")
+    print("Hello", name)
+    ```
+
+    If the user enters "Mojo" it prints "Hello Mojo".
+    """
+    if prompt != "":
+        print(prompt, end="")
+    return _fdopen["r"](0).readline()

@@ -10,14 +10,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
+# UNSUPPORTED: system-linux
+# COM: currently flaky on Linux only, see SDLC-1080
 # RUN: %mojo %s
 
 # This sample implements the nbody benchmarking in
 # https://benchmarksgame-team.pages.debian.net/benchmarksgame/performance/nbody.html
 
-from math import sqrt
-from benchmark import run, keep
 from collections import List
+from math import sqrt
+
+from benchmark import keep, run
 from testing import assert_almost_equal
 
 alias PI = 3.141592653589793

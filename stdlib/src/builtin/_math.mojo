@@ -17,6 +17,8 @@ module should be exposed by the current `math` module. The contents of this
 module should be eventually moved to the `math` module when it's open sourced.
 """
 
+from bit import count_trailing_zeros
+
 # ===----------------------------------------------------------------------=== #
 # Ceilable
 # ===----------------------------------------------------------------------=== #
@@ -46,6 +48,11 @@ trait Ceilable:
     # TODO(MOCO-333): Reconsider the signature when we have parametric traits or
     # associated types.
     fn __ceil__(self) -> Self:
+        """Return the ceiling of the Int value, which is itself.
+
+        Returns:
+            The Int value itself.
+        """
         ...
 
 
@@ -78,6 +85,11 @@ trait Floorable:
     # TODO(MOCO-333): Reconsider the signature when we have parametric traits or
     # associated types.
     fn __floor__(self) -> Self:
+        """Return the floor of the Int value, which is itself.
+
+        Returns:
+            The Int value itself.
+        """
         ...
 
 
@@ -194,76 +206,9 @@ trait Truncable:
     # TODO(MOCO-333): Reconsider the signature when we have parametric traits or
     # associated types.
     fn __trunc__(self) -> Self:
+        """Return the truncated Int value, which is itself.
+
+        Returns:
+            The Int value itself.
+        """
         ...
-
-
-# ===----------------------------------------------------------------------=== #
-# gcd
-# ===----------------------------------------------------------------------=== #
-
-
-fn gcd(owned m: Int, owned n: Int, /) -> Int:
-    """Compute the greatest common divisor of two integers.
-
-    Args:
-        m: The first integer.
-        n: The second integrer.
-
-    Returns:
-        The greatest common divisor of the two integers.
-    """
-    while n:
-        m, n = n, m % n
-    return abs(m)
-
-
-fn gcd(s: Span[Int], /) -> Int:
-    """Computes the greatest common divisor of a span of integers.
-
-    Args:
-        s: A span containing a collection of integers.
-
-    Returns:
-        The greatest common divisor of all the integers in the span.
-    """
-    if len(s) == 0:
-        return 0
-    var result = s[0]
-    for item in s[1:]:
-        result = gcd(item[], result)
-        if result == 1:
-            return result
-    return result
-
-
-@always_inline
-fn gcd(l: List[Int], /) -> Int:
-    """Computes the greatest common divisor of a list of integers.
-
-    Args:
-        l: A list containing a collection of integers.
-
-    Returns:
-        The greatest common divisor of all the integers in the list.
-    """
-    return gcd(Span(l))
-
-
-fn gcd(*values: Int) -> Int:
-    """Computes the greatest common divisor of a variadic number of integers.
-
-    Args:
-        values: A variadic list of integers.
-
-    Returns:
-        The greatest common divisor of the given integers.
-    """
-    # TODO: Deduplicate when we can create a Span from VariadicList
-    if len(values) == 0:
-        return 0
-    var result = values[0]
-    for i in range(1, len(values)):
-        result = gcd(values[i], result)
-        if result == 1:
-            return result
-    return result

@@ -17,13 +17,24 @@ These are Mojo built-ins, so you don't need to import them.
 
 
 from os import abort
+from sys import is_defined, triple_is_nvidia_cuda
 from sys._build import is_kernels_debug_build
-from sys import triple_is_nvidia_cuda, is_defined
+
 from builtin._location import __call_location, _SourceLocation
+
+# Print an error and fail.
+alias _ERROR_ON_ASSERT = is_kernels_debug_build() or is_defined[
+    "MOJO_ENABLE_ASSERTIONS"
+]()
+
+# Print a warning, but do not fail (useful for testing assert behavior).
+alias _WARN_ON_ASSERT = is_defined["ASSERT_WARNING"]()
 
 
 @always_inline
-fn debug_assert[stringable: Stringable](cond: Bool, msg: stringable):
+fn debug_assert[
+    func: fn () capturing -> Bool, formattable: Formattable
+](message: formattable):
     """Asserts that the condition is true.
 
     The `debug_assert` is similar to `assert` in C++. It is a no-op in release
@@ -34,32 +45,55 @@ fn debug_assert[stringable: Stringable](cond: Bool, msg: stringable):
     for enabling assertions in the library.
 
     Parameters:
-        stringable: The type of the message.
+        func: The function to invoke to check if the assertion holds. Can be used
+            if the function is side-effecting, in which case a debug_assert taking
+            a Bool will evaluate the expression producing the Bool even in release mode.
+        formattable: The type of the message.
+
+    Args:
+        message: The message to convert to `String` before displaying it on failure.
+    """
+
+    @parameter
+    if _ERROR_ON_ASSERT or _WARN_ON_ASSERT:
+        debug_assert(func(), message)
+
+
+@always_inline
+fn debug_assert[formattable: Formattable](cond: Bool, message: formattable):
+    """Asserts that the condition is true.
+
+    The `debug_assert` is similar to `assert` in C++. It is a no-op in release
+    builds unless MOJO_ENABLE_ASSERTIONS is defined.
+
+    Right now, users of the mojo-sdk must explicitly specify `-D MOJO_ENABLE_ASSERTIONS`
+    to enable assertions.  It is not sufficient to compile programs with `-debug-level full`
+    for enabling assertions in the library.
+
+    Parameters:
+        formattable: The type of the message.
 
     Args:
         cond: The bool value to assert.
-        msg: The message to display on failure.
+        message: The message to convert to `String` before displaying it on failure.
     """
 
-    # Print an error and fail.
-    alias err = is_kernels_debug_build() or is_defined[
-        "MOJO_ENABLE_ASSERTIONS"
-    ]()
-
-    # Print a warning, but do not fail (useful for testing assert behavior).
-    alias warn = is_defined["ASSERT_WARNING"]()
-
     @parameter
-    if err or warn:
-        if not cond:
-            _debug_assert_msg[err](msg, __call_location())
+    if _ERROR_ON_ASSERT or _WARN_ON_ASSERT:
+        if cond:
+            return
+        _debug_assert_msg[is_warning=_WARN_ON_ASSERT](
+            message, __call_location()
+        )
 
 
 @no_inline
 fn _debug_assert_msg[
-    err: Bool, stringable: Stringable
-](msg: stringable, loc: _SourceLocation):
+    formattable: Formattable, //, *, is_warning: Bool = False
+](msg: formattable, loc: _SourceLocation):
     """Aborts with (or prints) the given message and location.
+
+    This function is intentionally marked as no_inline to reduce binary size.
 
     Note that it's important that this function doesn't get inlined; otherwise,
     an indirect recursion of @always_inline functions is possible (e.g. because
@@ -71,14 +105,14 @@ fn _debug_assert_msg[
         # On GPUs, assert shouldn't allocate.
 
         @parameter
-        if err:
-            abort()
-        else:
+        if is_warning:
             print("Assert Warning")
-        return
-
-    @parameter
-    if err:
-        abort(loc.prefix("Assert Error: " + str(msg)))
+        else:
+            abort()
     else:
-        print(loc.prefix("Assert Warning:"), str(msg))
+
+        @parameter
+        if is_warning:
+            print(loc.prefix("Assert Warning:"), msg)
+        else:
+            abort(loc.prefix("Assert Error: " + String.format_sequence(msg)))

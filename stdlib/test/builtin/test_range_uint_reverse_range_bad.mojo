@@ -10,36 +10,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
-# RUN: %mojo %s
+# REQUIRES: has_not
+# RUN: not --crash mojo -D MOJO_ENABLE_ASSERTIONS %s 2>&1
 
 from testing import assert_equal
 
 
-fn test_list() raises:
-    assert_equal(len([1, 2.0, 3.14, [-1, -2]]), 4)
-
-
-fn test_variadic_list() raises:
-    @parameter
-    fn check_list(*nums: Int) raises:
-        assert_equal(nums[0], 5)
-        assert_equal(nums[1], 8)
-        assert_equal(nums[2], 6)
-        assert_equal(nums[True], 8)
-
-        assert_equal(len(nums), 3)
-
-    check_list(5, 8, 6)
-
-
-fn test_repr_list() raises:
-    var l = List(1, 2, 3)
-    assert_equal(l.__repr__(), "[1, 2, 3]")
-    var empty = List[Int]()
-    assert_equal(empty.__repr__(), "[]")
+def test_range_uint_bad_step_size():
+    # Ensure constructing a range with a "-1" step size (i.e. reverse range)
+    # with UInt is rejected and aborts now via `debug_assert` handler.
+    var r = range(UInt(0), UInt(10), UInt(Int(-1)))
 
 
 def main():
-    test_list()
-    test_variadic_list()
-    test_repr_list()
+    test_range_uint_bad_step_size()

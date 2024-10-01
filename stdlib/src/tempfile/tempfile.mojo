@@ -19,11 +19,10 @@ from tempfile import gettempdir
 ```
 """
 
-from collections import Optional
 import os
 import sys
+from collections import Optional, List
 from pathlib import Path
-
 
 alias TMP_MAX = 10_000
 
@@ -32,7 +31,9 @@ fn _get_random_name(size: Int = 8) -> String:
     alias characters = String("abcdefghijklmnopqrstuvwxyz0123456789_")
     var name_list = List[UInt8](capacity=size + 1)
     for _ in range(size):
-        var rand_index = int(random.random_ui64(0, len(characters) - 1))
+        var rand_index = int(
+            random.random_ui64(0, characters.byte_length() - 1)
+        )
         name_list.append(ord(characters[rand_index]))
     name_list.append(0)
     return String(name_list^)
@@ -144,11 +145,7 @@ fn mkdtemp(
     Raises:
         If the directory can not be created.
     """
-    var final_dir: Path
-    if not dir:
-        final_dir = Path(_get_default_tempdir())
-    else:
-        final_dir = Path(dir.value()[])
+    var final_dir = Path(dir.value()) if dir else Path(_get_default_tempdir())
 
     for _ in range(TMP_MAX):
         var dir_name = final_dir / (prefix + _get_random_name() + suffix)
@@ -164,3 +161,242 @@ fn mkdtemp(
         except:
             continue
     raise Error("Failed to create temporary file")
+
+
+# TODO use shutil.rmtree (or equivalent) when it exists
+fn _rmtree(path: String, ignore_errors: Bool = False) raises:
+    """Removes the specified directory and all its contents.
+
+    If the path is a symbolic link, an error is raised. If ignore_errors is
+    True, errors resulting from failed removals will be ignored. Absolute and
+    relative paths are allowed, relative paths are resolved from cwd.
+
+    Args:
+        path: The path to the directory.
+        ignore_errors: Whether to ignore errors.
+    """
+    if os.path.islink(path):
+        raise Error("`path`can not be a symbolic link: " + path)
+
+    for file_or_dir in os.listdir(path):
+        var curr_path = os.path.join(path, file_or_dir[])
+        if os.path.isfile(curr_path):
+            try:
+                os.remove(curr_path)
+            except e:
+                if not ignore_errors:
+                    raise e
+            continue
+        if os.path.isdir(curr_path):
+            try:
+                _rmtree(curr_path, ignore_errors)
+            except e:
+                if ignore_errors:
+                    continue
+                raise e
+    try:
+        os.rmdir(path)
+    except e:
+        if not ignore_errors:
+            raise e
+
+
+struct TemporaryDirectory:
+    """A temporary directory."""
+
+    var name: String
+    """The name of the temporary directory."""
+    var _ignore_cleanup_errors: Bool
+    """Whether to ignore cleanup errors."""
+
+    fn __init__(
+        inout self,
+        suffix: String = "",
+        prefix: String = "tmp",
+        dir: Optional[String] = None,
+        ignore_cleanup_errors: Bool = False,
+    ) raises:
+        """Create a temporary directory.
+
+        Can be used as a context manager. When used as a context manager,
+        the directory is removed when the context manager exits.
+
+        Args:
+            suffix: Suffix to use for the directory name.
+            prefix: Prefix to use for the directory name.
+            dir: Directory in which the directory will be created.
+            ignore_cleanup_errors: Whether to ignore cleanup errors.
+        """
+        self._ignore_cleanup_errors = ignore_cleanup_errors
+
+        self.name = mkdtemp(suffix, prefix, dir)
+
+    fn __enter__(self) -> String:
+        """The function to call when entering the context.
+
+        Returns:
+            The temporary directory name.
+        """
+        return self.name
+
+    fn __exit__(self) raises:
+        """Called when exiting the context with no error."""
+        _rmtree(self.name, ignore_errors=self._ignore_cleanup_errors)
+
+    fn __exit__(self, err: Error) -> Bool:
+        """Called when exiting the context with an error.
+
+        Args:
+            err: The error raised inside the context.
+
+        Returns:
+            True if the temporary directory was removed successfully.
+        """
+        try:
+            self.__exit__()
+            return True
+        except:
+            return False
+
+
+struct NamedTemporaryFile:
+    """A handle to a temporary file."""
+
+    var _file_handle: FileHandle
+    """The underlying file handle."""
+    var _delete: Bool
+    """Whether the file is deleted on close."""
+    var name: String
+    """Name of the file."""
+
+    fn __init__(
+        inout self,
+        mode: String = "w",
+        name: Optional[String] = None,
+        suffix: String = "",
+        prefix: String = "tmp",
+        dir: Optional[String] = None,
+        delete: Bool = True,
+    ) raises:
+        """Create a named temporary file.
+
+        This is a wrapper around a `FileHandle`,
+        `os.remove()` is called in the `close()` method if `delete` is True.
+
+        Can be used as a context manager. When used as a context manager, the
+        `close()` is called when the context manager exits.
+
+        Args:
+            mode: The mode to open the file in (the mode can be "r" or "w").
+            name: The name of the temp file. If it is unspecified, then a random name will be provided.
+            suffix: Suffix to use for the file name if name is not provided.
+            prefix: Prefix to use for the file name if name is not provided.
+            dir: Directory in which the file will be created.
+            delete: Whether the file is deleted on close.
+        """
+
+        var final_dir = dir.value() if dir else _get_default_tempdir()
+
+        self._delete = delete
+        self.name = ""
+
+        if name:
+            self.name = name.value()
+        else:
+            for _ in range(TMP_MAX):
+                var potential_name = final_dir + os.sep + prefix + _get_random_name() + suffix
+                if not os.path.exists(potential_name):
+                    self.name = potential_name
+                    break
+        try:
+            # TODO for now this name could be relative,
+            # python implementation expands the path,
+            # but several functions are not yet implemented in mojo
+            # i.e. abspath, normpath
+
+            # TODO(field sensitivity lifetimes), eliminate tmp.
+            var tmp = FileHandle(self.name, mode=mode)
+            self._file_handle = tmp^
+            return
+        except:
+            raise Error("Failed to create temporary file")
+
+    fn __del__(owned self):
+        """Closes the file handle."""
+        try:
+            self.close()
+        except:
+            pass
+
+    fn close(inout self) raises:
+        """Closes the file handle."""
+        self._file_handle.close()
+        if self._delete:
+            os.remove(self.name)
+
+    fn __moveinit__(inout self, owned existing: Self):
+        """Moves constructor for the file handle.
+
+        Args:
+            existing: The existing file handle.
+        """
+        self._file_handle = existing._file_handle^
+        self._delete = existing._delete
+        self.name = existing.name^
+
+    fn read(self, size: Int64 = -1) raises -> String:
+        """Reads the data from the file.
+
+        Args:
+            size: Requested number of bytes to read.
+
+        Returns:
+            The contents of the file.
+        """
+        return self._file_handle.read(size)
+
+    fn read_bytes(self, size: Int64 = -1) raises -> List[UInt8]:
+        """Read from file buffer until we have `size` characters or we hit EOF.
+        If `size` is negative or omitted, read until EOF.
+
+        Args:
+            size: Requested number of bytes to read.
+
+        Returns:
+            The contents of the file.
+        """
+        return self._file_handle.read_bytes(size)
+
+    fn seek(self, offset: UInt64, whence: UInt8 = os.SEEK_SET) raises -> UInt64:
+        """Seeks to the given offset in the file.
+
+        Args:
+            offset: The byte offset to seek to from the start of the file.
+            whence: The reference point for the offset:
+                os.SEEK_SET = 0: start of file (Default).
+                os.SEEK_CUR = 1: current position.
+                os.SEEK_END = 2: end of file.
+
+        Raises:
+            An error if this file handle is invalid, or if file seek returned a
+            failure.
+
+        Returns:
+            The resulting byte offset from the start of the file.
+        """
+        return self._file_handle.seek(offset, whence)
+
+    fn write(self, data: String) raises:
+        """Write the data to the file.
+
+        Args:
+            data: The data to write to the file.
+        """
+        self._file_handle.write(data)
+
+    fn __enter__(owned self) -> Self:
+        """The function to call when entering the context.
+
+        Returns:
+            The file handle."""
+        return self^

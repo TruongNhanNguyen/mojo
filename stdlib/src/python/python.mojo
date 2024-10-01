@@ -19,14 +19,17 @@ from python import Python
 ```
 """
 
+from collections import Dict
+from os.env import getenv
 from sys import external_call, sizeof
 from sys.ffi import _get_global
-from os.env import getenv
+
 from memory import UnsafePointer
+
 from utils import StringRef
 
 from ._cpython import CPython, Py_eval_input, Py_file_input
-from .object import PythonObject
+from .python_object import PythonObject
 
 
 fn _init_global(ignored: UnsafePointer[NoneType]) -> UnsafePointer[NoneType]:
@@ -198,7 +201,7 @@ struct Python:
             The Python module.
         """
         var cpython = _get_global_python_itf().cpython()
-        # Throw error if it occured during initialization
+        # Throw error if it occurred during initialization
         cpython.check_init_error()
         var module_maybe = cpython.PyImport_ImportModule(module)
         Python.throw_python_exception_if_error_state(cpython)
@@ -222,10 +225,12 @@ struct Python:
         """
         return PythonObject([])
 
+    @no_inline
     fn __str__(inout self, str_obj: PythonObject) -> StringRef:
         """Return a string representing the given Python object.
 
-        This function allows to convert Python objects to Mojo string type.
+        Args:
+            str_obj: The Python object.
 
         Returns:
             Mojo string representing the given Python object.

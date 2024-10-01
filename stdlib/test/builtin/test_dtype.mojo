@@ -15,6 +15,12 @@
 from collections import Set
 
 from testing import assert_equal, assert_false, assert_true
+from sys import sizeof
+
+
+fn test_equality() raises:
+    assert_true(DType.float32 is DType.float32)
+    assert_true(DType.float32 is not DType.int32)
 
 
 fn test_stringable() raises:
@@ -26,7 +32,6 @@ fn test_representable() raises:
     assert_equal(repr(DType.float32), "DType.float32")
     assert_equal(repr(DType.int64), "DType.int64")
     assert_equal(repr(DType.bool), "DType.bool")
-    assert_equal(repr(DType.address), "DType.address")
     assert_equal(repr(DType.index), "DType.index")
 
 
@@ -39,7 +44,33 @@ fn test_key_element() raises:
     assert_true(DType.int64 in set)
 
 
-fn main() raises:
+fn test_sizeof() raises:
+    assert_equal(DType.int16.sizeof(), sizeof[DType.int16]())
+    assert_equal(DType.float32.sizeof(), sizeof[DType.float32]())
+    assert_equal(DType.index.sizeof(), sizeof[DType.index]())
+
+
+def test_from_str():
+    assert_equal(DType._from_str("bool"), DType.bool)
+    assert_equal(DType._from_str("DType.bool"), DType.bool)
+
+    alias dt = DType._from_str("bool")
+    assert_equal(dt, DType.bool)
+
+    assert_equal(DType._from_str("bfloat16"), DType.bfloat16)
+    assert_equal(DType._from_str("DType.bfloat16"), DType.bfloat16)
+
+    assert_equal(DType._from_str("int64"), DType.int64)
+    assert_equal(DType._from_str("DType.int64"), DType.int64)
+
+    assert_equal(DType._from_str("blahblah"), DType.invalid)
+    assert_equal(DType._from_str("DType.blahblah"), DType.invalid)
+
+
+def main():
+    test_equality()
     test_stringable()
     test_representable()
     test_key_element()
+    test_sizeof()
+    test_from_str()

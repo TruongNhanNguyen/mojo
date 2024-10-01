@@ -11,13 +11,15 @@
 # limitations under the License.
 # ===----------------------------------------------------------------------=== #
 
-# RUN: %mojo %s
+# RUN: %mojo %s -t
 
-from benchmark import Bench, Bencher, BenchId, keep, BenchConfig, Unit, run
-from utils.stringref import _memmem, _memchr, _align_down
-
-from bit import countr_zero
+from sys import simdwidthof
+from benchmark import Bench, BenchConfig, Bencher, BenchId, Unit, keep, run
+from bit import count_trailing_zeros
 from builtin.dtype import _uint_type_of_width
+from memory import memcmp, bitcast
+
+from utils.stringref import _align_down, _memchr, _memmem
 
 # ===----------------------------------------------------------------------===#
 # Benchmark Data
@@ -146,15 +148,15 @@ var needle = "school"  # a word intentionally not in the test data
 fn _memmem_baseline[
     type: DType
 ](
-    haystack: DTypePointer[type],
+    haystack: UnsafePointer[Scalar[type]],
     haystack_len: Int,
-    needle: DTypePointer[type],
+    needle: UnsafePointer[Scalar[type]],
     needle_len: Int,
-) -> DTypePointer[type]:
+) -> UnsafePointer[Scalar[type]]:
     if not needle_len:
         return haystack
     if needle_len > haystack_len:
-        return DTypePointer[type]()
+        return UnsafePointer[Scalar[type]]()
     if needle_len == 1:
         return _memchr[type](haystack, needle[0], haystack_len)
 
@@ -167,7 +169,7 @@ fn _memmem_baseline[
         var bool_mask = haystack.load[width=bool_mask_width](i) == first_needle
         var mask = bitcast[_uint_type_of_width[bool_mask_width]()](bool_mask)
         while mask:
-            var offset = i + countr_zero(mask)
+            var offset = int(i + count_trailing_zeros(mask))
             if memcmp(haystack + offset + 1, needle + 1, needle_len - 1) == 0:
                 return haystack + offset
             mask = mask & (mask - 1)
@@ -178,7 +180,7 @@ fn _memmem_baseline[
 
         if memcmp(haystack + i + 1, needle + 1, needle_len - 1) == 0:
             return haystack + i
-    return DTypePointer[type]()
+    return UnsafePointer[Scalar[type]]()
 
 
 # ===----------------------------------------------------------------------===#
@@ -190,9 +192,9 @@ fn bench_find_baseline(inout b: Bencher) raises:
     @parameter
     fn call_fn():
         _ = _memmem_baseline(
-            haystack.as_uint8_ptr(),
+            haystack.unsafe_ptr(),
             len(haystack),
-            needle.as_uint8_ptr(),
+            needle.unsafe_ptr(),
             len(needle),
         )
 
@@ -205,9 +207,9 @@ fn bench_find_optimized(inout b: Bencher) raises:
     @parameter
     fn call_fn():
         _ = _memmem(
-            haystack.as_uint8_ptr(),
+            haystack.unsafe_ptr(),
             len(haystack),
-            needle.as_uint8_ptr(),
+            needle.unsafe_ptr(),
             len(needle),
         )
 
@@ -218,7 +220,7 @@ fn bench_find_optimized(inout b: Bencher) raises:
 # Benchmark Main
 # ===----------------------------------------------------------------------===#
 def main():
-    var m = Bench(BenchConfig(num_repetitions=5, warmup_iters=100))
+    var m = Bench(BenchConfig(num_repetitions=1, warmup_iters=10000))
     m.bench_function[bench_find_baseline](BenchId("find_baseline"))
     m.bench_function[bench_find_optimized](BenchId("find_optimized"))
     m.dump_report()

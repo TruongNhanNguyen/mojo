@@ -12,16 +12,18 @@
 # ===----------------------------------------------------------------------=== #
 """Defines intrinsics.
 
-You can import these APIs from the `complex` package. For example:
+You can import these APIs from the `sys` package. For example:
 
 ```mojo
 from sys import PrefetchLocality
 ```
 """
 
-from sys import sizeof
+from .info import sizeof, triple_is_nvidia_cuda
+from ._assembly import inlined_assembly
+import math
 
-from memory import AddressSpace, DTypePointer
+from memory import AddressSpace, UnsafePointer
 
 # ===----------------------------------------------------------------------===#
 # llvm_intrinsic
@@ -32,7 +34,10 @@ from memory import AddressSpace, DTypePointer
 
 @always_inline("nodebug")
 fn llvm_intrinsic[
-    intrin: StringLiteral, type: AnyTrivialRegType, has_side_effect: Bool = True
+    intrin: StringLiteral,
+    type: AnyTrivialRegType,
+    *,
+    has_side_effect: Bool = True,
 ]() -> type:
     """Calls an LLVM intrinsic with no arguments.
 
@@ -81,9 +86,10 @@ fn llvm_intrinsic[
 
 @always_inline("nodebug")
 fn llvm_intrinsic[
+    T0: AnyTrivialRegType, //,
     intrin: StringLiteral,
     type: AnyTrivialRegType,
-    T0: AnyTrivialRegType,
+    *,
     has_side_effect: Bool = True,
 ](arg0: T0) -> type:
     """Calls an LLVM intrinsic with one argument.
@@ -92,9 +98,9 @@ fn llvm_intrinsic[
     arg0.
 
     Parameters:
+      T0: The type of the first argument to the intrinsic (arg0).
       intrin: The name of the llvm intrinsic.
       type: The return type of the intrinsic.
-      T0: The type of the first argument to the intrinsic (arg0).
       has_side_effect: If `True` the intrinsic will have side effects, otherwise its pure.
 
     Args:
@@ -136,10 +142,11 @@ fn llvm_intrinsic[
 
 @always_inline("nodebug")
 fn llvm_intrinsic[
+    T0: AnyTrivialRegType,
+    T1: AnyTrivialRegType, //,
     intrin: StringLiteral,
     type: AnyTrivialRegType,
-    T0: AnyTrivialRegType,
-    T1: AnyTrivialRegType,
+    *,
     has_side_effect: Bool = True,
 ](arg0: T0, arg1: T1) -> type:
     """Calls an LLVM intrinsic with two arguments.
@@ -148,10 +155,10 @@ fn llvm_intrinsic[
     arguments arg0 and arg1.
 
     Parameters:
-      intrin: The name of the llvm intrinsic.
-      type: The return type of the intrinsic.
       T0: The type of the first argument to the intrinsic (arg0).
       T1: The type of the second argument to the intrinsic (arg1).
+      intrin: The name of the llvm intrinsic.
+      type: The return type of the intrinsic.
       has_side_effect: If `True` the intrinsic will have side effects, otherwise its pure.
 
     Args:
@@ -194,11 +201,12 @@ fn llvm_intrinsic[
 
 @always_inline("nodebug")
 fn llvm_intrinsic[
-    intrin: StringLiteral,
-    type: AnyTrivialRegType,
     T0: AnyTrivialRegType,
     T1: AnyTrivialRegType,
-    T2: AnyTrivialRegType,
+    T2: AnyTrivialRegType, //,
+    intrin: StringLiteral,
+    type: AnyTrivialRegType,
+    *,
     has_side_effect: Bool = True,
 ](arg0: T0, arg1: T1, arg2: T2) -> type:
     """Calls an LLVM intrinsic with three arguments.
@@ -207,11 +215,11 @@ fn llvm_intrinsic[
     arguments arg0, arg1 and arg2.
 
     Parameters:
-      intrin: The name of the llvm intrinsic.
-      type: The return type of the intrinsic.
       T0: The type of the first argument to the intrinsic (arg0).
       T1: The type of the second argument to the intrinsic (arg1).
       T2: The type of the third argument to the intrinsic (arg2).
+      intrin: The name of the llvm intrinsic.
+      type: The return type of the intrinsic.
       has_side_effect: If `True` the intrinsic will have side effects, otherwise its pure.
 
     Args:
@@ -258,12 +266,13 @@ fn llvm_intrinsic[
 
 @always_inline("nodebug")
 fn llvm_intrinsic[
-    intrin: StringLiteral,
-    type: AnyTrivialRegType,
     T0: AnyTrivialRegType,
     T1: AnyTrivialRegType,
     T2: AnyTrivialRegType,
-    T3: AnyTrivialRegType,
+    T3: AnyTrivialRegType, //,
+    intrin: StringLiteral,
+    type: AnyTrivialRegType,
+    *,
     has_side_effect: Bool = True,
 ](arg0: T0, arg1: T1, arg2: T2, arg3: T3) -> type:
     """Calls an LLVM intrinsic with four arguments.
@@ -272,12 +281,12 @@ fn llvm_intrinsic[
     arguments arg0, arg1, arg2 and arg3.
 
     Parameters:
-      intrin: The name of the llvm intrinsic.
-      type: The return type of the intrinsic.
       T0: The type of the first argument to the intrinsic (arg0).
       T1: The type of the second argument to the intrinsic (arg1).
       T2: The type of the third argument to the intrinsic (arg2).
       T3: The type of the fourth argument to the intrinsic (arg3).
+      intrin: The name of the llvm intrinsic.
+      type: The return type of the intrinsic.
       has_side_effect: If `True` the intrinsic will have side effects, otherwise its pure.
 
     Args:
@@ -326,13 +335,14 @@ fn llvm_intrinsic[
 
 @always_inline("nodebug")
 fn llvm_intrinsic[
-    intrin: StringLiteral,
-    type: AnyTrivialRegType,
     T0: AnyTrivialRegType,
     T1: AnyTrivialRegType,
     T2: AnyTrivialRegType,
     T3: AnyTrivialRegType,
-    T4: AnyTrivialRegType,
+    T4: AnyTrivialRegType, //,
+    intrin: StringLiteral,
+    type: AnyTrivialRegType,
+    *,
     has_side_effect: Bool = True,
 ](arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4) -> type:
     """Calls an LLVM intrinsic with five arguments.
@@ -341,13 +351,13 @@ fn llvm_intrinsic[
       arguments arg0, arg1, arg2, arg3 and arg4.
 
     Parameters:
-      intrin: The name of the llvm intrinsic.
-      type: The return type of the intrinsic.
       T0: The type of the first argument to the intrinsic (arg0).
       T1: The type of the second argument to the intrinsic (arg1).
       T2: The type of the third argument to the intrinsic (arg2).
       T3: The type of the fourth argument to the intrinsic (arg3).
       T4: The type of the fifth argument to the intrinsic (arg4).
+      intrin: The name of the llvm intrinsic.
+      type: The return type of the intrinsic.
       has_side_effect: If `True` the intrinsic will have side effects, otherwise its pure.
 
 
@@ -393,14 +403,15 @@ fn llvm_intrinsic[
 
 @always_inline("nodebug")
 fn llvm_intrinsic[
-    intrin: StringLiteral,
-    type: AnyTrivialRegType,
     T0: AnyTrivialRegType,
     T1: AnyTrivialRegType,
     T2: AnyTrivialRegType,
     T3: AnyTrivialRegType,
     T4: AnyTrivialRegType,
-    T5: AnyTrivialRegType,
+    T5: AnyTrivialRegType, //,
+    intrin: StringLiteral,
+    type: AnyTrivialRegType,
+    *,
     has_side_effect: Bool = True,
 ](arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5) -> type:
     """Calls an LLVM intrinsic with six arguments.
@@ -409,14 +420,14 @@ fn llvm_intrinsic[
       arguments arg0, arg1, ..., arg5
 
     Parameters:
-      intrin: The name of the llvm intrinsic.
-      type: The return type of the intrinsic.
       T0: The type of the first argument to the intrinsic (arg0).
       T1: The type of the second argument to the intrinsic (arg1).
       T2: The type of the third argument to the intrinsic (arg2).
       T3: The type of the fourth argument to the intrinsic (arg3).
       T4: The type of the fifth argument to the intrinsic (arg4).
       T5: The type of the sixth argument to the intrinsic (arg5).
+      intrin: The name of the llvm intrinsic.
+      type: The return type of the intrinsic.
       has_side_effect: If `True` the intrinsic will have side effects, otherwise its pure.
 
 
@@ -464,15 +475,16 @@ fn llvm_intrinsic[
 
 @always_inline("nodebug")
 fn llvm_intrinsic[
-    intrin: StringLiteral,
-    type: AnyTrivialRegType,
     T0: AnyTrivialRegType,
     T1: AnyTrivialRegType,
     T2: AnyTrivialRegType,
     T3: AnyTrivialRegType,
     T4: AnyTrivialRegType,
     T5: AnyTrivialRegType,
-    T6: AnyTrivialRegType,
+    T6: AnyTrivialRegType, //,
+    intrin: StringLiteral,
+    type: AnyTrivialRegType,
+    *,
     has_side_effect: Bool = True,
 ](arg0: T0, arg1: T1, arg2: T2, arg3: T3, arg4: T4, arg5: T5, arg6: T6) -> type:
     """Calls an LLVM intrinsic with seven arguments.
@@ -481,8 +493,6 @@ fn llvm_intrinsic[
       arguments arg0, arg1, ..., arg6
 
     Parameters:
-      intrin: The name of the llvm intrinsic.
-      type: The return type of the intrinsic.
       T0: The type of the first argument to the intrinsic (arg0).
       T1: The type of the second argument to the intrinsic (arg1).
       T2: The type of the third argument to the intrinsic (arg2).
@@ -490,6 +500,8 @@ fn llvm_intrinsic[
       T4: The type of the fifth argument to the intrinsic (arg4).
       T5: The type of the sixth argument to the intrinsic (arg5).
       T6: The type of the seventh argument to the intrinsic (arg6).
+      intrin: The name of the llvm intrinsic.
+      type: The return type of the intrinsic.
       has_side_effect: If `True` the intrinsic will have side effects, otherwise its pure.
 
 
@@ -537,8 +549,6 @@ fn llvm_intrinsic[
 
 @always_inline("nodebug")
 fn llvm_intrinsic[
-    intrin: StringLiteral,
-    type: AnyTrivialRegType,
     T0: AnyTrivialRegType,
     T1: AnyTrivialRegType,
     T2: AnyTrivialRegType,
@@ -546,7 +556,10 @@ fn llvm_intrinsic[
     T4: AnyTrivialRegType,
     T5: AnyTrivialRegType,
     T6: AnyTrivialRegType,
-    T7: AnyTrivialRegType,
+    T7: AnyTrivialRegType, //,
+    intrin: StringLiteral,
+    type: AnyTrivialRegType,
+    *,
     has_side_effect: Bool = True,
 ](
     arg0: T0,
@@ -564,8 +577,6 @@ fn llvm_intrinsic[
       arguments arg0, arg1, ..., arg7
 
     Parameters:
-      intrin: The name of the llvm intrinsic.
-      type: The return type of the intrinsic.
       T0: The type of the first argument to the intrinsic (arg0).
       T1: The type of the second argument to the intrinsic (arg1).
       T2: The type of the third argument to the intrinsic (arg2).
@@ -574,6 +585,8 @@ fn llvm_intrinsic[
       T5: The type of the sixth argument to the intrinsic (arg5).
       T6: The type of the seventh argument to the intrinsic (arg6).
       T7: The type of the eighth argument to the intrinsic (arg7).
+      intrin: The name of the llvm intrinsic.
+      type: The return type of the intrinsic.
       has_side_effect: If `True` the intrinsic will have side effects, otherwise its pure.
 
     Args:
@@ -621,8 +634,6 @@ fn llvm_intrinsic[
 
 @always_inline("nodebug")
 fn llvm_intrinsic[
-    intrin: StringLiteral,
-    type: AnyTrivialRegType,
     T0: AnyTrivialRegType,
     T1: AnyTrivialRegType,
     T2: AnyTrivialRegType,
@@ -631,7 +642,10 @@ fn llvm_intrinsic[
     T5: AnyTrivialRegType,
     T6: AnyTrivialRegType,
     T7: AnyTrivialRegType,
-    T8: AnyTrivialRegType,
+    T8: AnyTrivialRegType, //,
+    intrin: StringLiteral,
+    type: AnyTrivialRegType,
+    *,
     has_side_effect: Bool = True,
 ](
     arg0: T0,
@@ -650,8 +664,6 @@ fn llvm_intrinsic[
       arguments arg0, arg1, ..., arg8
 
     Parameters:
-      intrin: The name of the llvm intrinsic.
-      type: The return type of the intrinsic.
       T0: The type of the first argument to the intrinsic (arg0).
       T1: The type of the second argument to the intrinsic (arg1).
       T2: The type of the third argument to the intrinsic (arg2).
@@ -661,6 +673,8 @@ fn llvm_intrinsic[
       T6: The type of the seventh argument to the intrinsic (arg6).
       T7: The type of the eighth argument to the intrinsic (arg7).
       T8: The type of the ninth argument to the intrinsic (arg8).
+      intrin: The name of the llvm intrinsic.
+      type: The return type of the intrinsic.
       has_side_effect: If `True` the intrinsic will have side effects, otherwise its pure.
 
     Args:
@@ -710,8 +724,6 @@ fn llvm_intrinsic[
 
 @always_inline("nodebug")
 fn llvm_intrinsic[
-    intrin: StringLiteral,
-    type: AnyTrivialRegType,
     T0: AnyTrivialRegType,
     T1: AnyTrivialRegType,
     T2: AnyTrivialRegType,
@@ -721,7 +733,10 @@ fn llvm_intrinsic[
     T6: AnyTrivialRegType,
     T7: AnyTrivialRegType,
     T8: AnyTrivialRegType,
-    T9: AnyTrivialRegType,
+    T9: AnyTrivialRegType, //,
+    intrin: StringLiteral,
+    type: AnyTrivialRegType,
+    *,
     has_side_effect: Bool = True,
 ](
     arg0: T0,
@@ -741,8 +756,6 @@ fn llvm_intrinsic[
       arguments arg0, arg1, ..., arg10
 
     Parameters:
-      intrin: The name of the llvm intrinsic.
-      type: The return type of the intrinsic.
       T0: The type of the first argument to the intrinsic (arg0).
       T1: The type of the second argument to the intrinsic (arg1).
       T2: The type of the third argument to the intrinsic (arg2).
@@ -753,6 +766,8 @@ fn llvm_intrinsic[
       T7: The type of the eighth argument to the intrinsic (arg7).
       T8: The type of the ninth argument to the intrinsic (arg8).
       T9: The type of the tenth argument to the intrinsic (arg9).
+      intrin: The name of the llvm intrinsic.
+      type: The return type of the intrinsic.
       has_side_effect: If `True` the intrinsic will have side effects, otherwise its pure.
 
 
@@ -806,11 +821,22 @@ fn llvm_intrinsic[
 # ===----------------------------------------------------------------------===#
 
 
+# NOTE: Converting from a scalar to a pointer is unsafe! The resulting pointer
+# is assumed not to alias any Mojo-derived pointer. DO NOT proliferate usage of
+# this function!
+fn _unsafe_aliasing_address_to_pointer[
+    type: DType
+](owned addr: Scalar[DType.index]) -> UnsafePointer[Scalar[type]]:
+    return UnsafePointer.address_of(addr).bitcast[
+        UnsafePointer[Scalar[type]]
+    ]()[]
+
+
 @always_inline("nodebug")
 fn gather[
-    type: DType, size: Int
+    type: DType, size: Int, //
 ](
-    base: SIMD[DType.address, size],
+    owned base: SIMD[DType.index, size],
     mask: SIMD[DType.bool, size],
     passthrough: SIMD[type, size],
     alignment: Int = 0,
@@ -858,12 +884,16 @@ fn gather[
 
     @parameter
     if size == 1:
-        return DTypePointer[type](base[0]).load() if mask else passthrough[0]
+        return _unsafe_aliasing_address_to_pointer[type](
+            base[0]
+        ).load() if mask else passthrough[0]
     return llvm_intrinsic[
         "llvm.masked.gather",
         __mlir_type[`!pop.simd<`, size.value, `, `, type.value, `>`],
     ](
-        base,
+        UnsafePointer.address_of(base).bitcast[
+            __mlir_type[`!pop.simd<`, size.value, `, address>`],
+        ]()[],
         Int32(alignment),
         mask,
         passthrough,
@@ -877,10 +907,10 @@ fn gather[
 
 @always_inline("nodebug")
 fn scatter[
-    type: DType, size: Int
+    type: DType, size: Int, //
 ](
     value: SIMD[type, size],
-    base: SIMD[DType.address, size],
+    owned base: SIMD[DType.index, size],
     mask: SIMD[DType.bool, size],
     alignment: Int = 0,
 ):
@@ -934,12 +964,14 @@ fn scatter[
     @parameter
     if size == 1:
         if mask:
-            var ptr = DTypePointer[type](base[0])
+            var ptr = _unsafe_aliasing_address_to_pointer[type](base[0])
             ptr.store(value[0])
         return
     llvm_intrinsic["llvm.masked.scatter", NoneType](
         value,
-        base,
+        UnsafePointer.address_of(base).bitcast[
+            __mlir_type[`!pop.simd<`, size.value, `, address>`],
+        ]()[],
         Int32(alignment),
         mask,
     )
@@ -971,17 +1003,14 @@ struct PrefetchLocality:
     """Extremely local locality (keep in cache)."""
 
     @always_inline("nodebug")
-    fn __init__(value: Int) -> PrefetchLocality:
+    fn __init__(inout self, value: Int):
         """Constructs a prefetch locality option.
 
         Args:
             value: An integer value representing the locality. Should be a value
                    in the range `[0, 3]`.
-
-        Returns:
-            The prefetch locality constructed.
         """
-        return PrefetchLocality {value: value}
+        self.value = value
 
 
 @register_passable("trivial")
@@ -996,17 +1025,14 @@ struct PrefetchRW:
     """Write prefetch."""
 
     @always_inline("nodebug")
-    fn __init__(value: Int) -> PrefetchRW:
+    fn __init__(inout self, value: Int):
         """Constructs a prefetch read-write option.
 
         Args:
             value: An integer value representing the prefetch read-write option
                    to be used. Should be a value in the range `[0, 1]`.
-
-        Returns:
-            The prefetch read-write option constructed.
         """
-        return PrefetchRW {value: value}
+        self.value = value
 
 
 # LLVM prefetch cache type
@@ -1022,17 +1048,14 @@ struct PrefetchCache:
     """The data prefetching option."""
 
     @always_inline("nodebug")
-    fn __init__(value: Int) -> PrefetchCache:
+    fn __init__(inout self, value: Int):
         """Constructs a prefetch option.
 
         Args:
             value: An integer value representing the prefetch cache option to be
                    used. Should be a value in the range `[0, 1]`.
-
-        Returns:
-            The prefetch cache type that was constructed.
         """
-        return PrefetchCache {value: value}
+        self.value = value
 
 
 @register_passable("trivial")
@@ -1165,27 +1188,36 @@ struct PrefetchOptions:
 
 @always_inline("nodebug")
 fn prefetch[
-    params: PrefetchOptions, type: DType, address_space: AddressSpace
-](addr: DTypePointer[type, address_space]):
+    type: DType, //, params: PrefetchOptions = PrefetchOptions()
+](addr: UnsafePointer[Scalar[type], *_]):
     """Prefetches an instruction or data into cache before it is used.
 
     The prefetch function provides prefetching hints for the target
     to prefetch instruction or data into cache before they are used.
 
     Parameters:
-      params: Configuration options for the prefect intrinsic.
       type: The DType of value stored in addr.
-      address_space: The address space of the pointer.
+      params: Configuration options for the prefect intrinsic.
 
     Args:
       addr: The data pointer to prefetch.
     """
-    return llvm_intrinsic["llvm.prefetch", NoneType](
-        addr.bitcast[DType.invalid.value](),
-        params.rw,
-        params.locality,
-        params.cache,
-    )
+
+    @parameter
+    if triple_is_nvidia_cuda():
+        inlined_assembly[
+            "prefetch.global.L2 [$0];",
+            NoneType,
+            constraints="l,~{memory}",
+            has_side_effect=True,
+        ](addr.bitcast[NoneType]())
+    else:
+        llvm_intrinsic["llvm.prefetch", NoneType](
+            addr.bitcast[NoneType](),
+            params.rw,
+            params.locality,
+            params.cache,
+        )
 
 
 # ===----------------------------------------------------------------------===#
@@ -1195,17 +1227,18 @@ fn prefetch[
 
 @always_inline("nodebug")
 fn masked_load[
-    size: Int
+    type: DType, //, size: Int
 ](
-    addr: DTypePointer,
+    addr: UnsafePointer[Scalar[type], *_],
     mask: SIMD[DType.bool, size],
-    passthrough: SIMD[addr.type, size],
+    passthrough: SIMD[type, size],
     alignment: Int = 1,
-) -> SIMD[addr.type, size]:
+) -> SIMD[type, size]:
     """Loads data from memory and return it, replacing masked lanes with values
     from the passthrough vector.
 
     Parameters:
+      type: DType of the return SIMD buffer.
       size: Size of the return SIMD buffer.
 
     Args:
@@ -1225,8 +1258,8 @@ fn masked_load[
     if size == 1:
         return addr.load() if mask else passthrough[0]
 
-    return llvm_intrinsic["llvm.masked.load", SIMD[addr.type, size]](
-        addr.bitcast[DType.invalid.value]().address,
+    return llvm_intrinsic["llvm.masked.load", SIMD[type, size]](
+        addr.bitcast[NoneType]().address,
         Int32(alignment),
         mask,
         passthrough,
@@ -1243,7 +1276,7 @@ fn masked_store[
     size: Int
 ](
     value: SIMD,
-    addr: DTypePointer[value.type],
+    addr: UnsafePointer[Scalar[value.type], *_],
     mask: SIMD[DType.bool, size],
     alignment: Int = 1,
 ):
@@ -1269,7 +1302,7 @@ fn masked_store[
 
     llvm_intrinsic["llvm.masked.store", NoneType](
         value,
-        addr.bitcast[DType.invalid.value]().address,
+        addr.bitcast[NoneType]().address,
         Int32(alignment),
         mask,
     )
@@ -1285,7 +1318,7 @@ fn compressed_store[
     type: DType, size: Int
 ](
     value: SIMD[type, size],
-    addr: DTypePointer[type],
+    addr: UnsafePointer[Scalar[type], *_],
     mask: SIMD[DType.bool, size],
 ):
     """Compresses the lanes of `value`, skipping `mask` lanes, and stores
@@ -1310,7 +1343,7 @@ fn compressed_store[
 
     llvm_intrinsic["llvm.masked.compressstore", NoneType](
         value,
-        addr.bitcast[DType.invalid.value]().address,
+        addr.bitcast[NoneType]().address,
         mask,
     )
 
@@ -1322,21 +1355,17 @@ fn compressed_store[
 
 @always_inline("nodebug")
 fn strided_load[
-    type: DType,
-    simd_width: Int,
-    /,
-    address_space: AddressSpace = AddressSpace.GENERIC,
+    type: DType, //, simd_width: Int
 ](
-    addr: DTypePointer[type, address_space],
+    addr: UnsafePointer[Scalar[type], *_],
     stride: Int,
-    mask: SIMD[DType.bool, simd_width],
+    mask: SIMD[DType.bool, simd_width] = True,
 ) -> SIMD[type, simd_width]:
     """Loads values from addr according to a specific stride.
 
     Parameters:
       type: DType of `value`, the value to store.
       simd_width: The width of the SIMD vectors.
-      address_space: The address space of the memory location.
 
     Args:
       addr: The memory location to load data from.
@@ -1352,48 +1381,11 @@ fn strided_load[
     if simd_width == 1:
         return addr.load() if mask else Scalar[type]()
 
-    alias IndexTy = SIMD[DType.index, simd_width]
-    var iota = llvm_intrinsic[
-        "llvm.experimental.stepvector", IndexTy, has_side_effect=False
+    var offset = int(addr) + stride * sizeof[type]() * math.iota[
+        DType.index, simd_width
     ]()
-    var offset = IndexTy(int(addr)) + IndexTy(stride) * iota * IndexTy(
-        sizeof[type]()
-    )
     var passthrough = SIMD[type, simd_width]()
-    return gather[type, simd_width](
-        offset.cast[DType.address](), mask, passthrough
-    )
-
-
-@always_inline("nodebug")
-fn strided_load[
-    type: DType,
-    simd_width: Int,
-    /,
-    address_space: AddressSpace = AddressSpace.GENERIC,
-](addr: DTypePointer[type, address_space], stride: Int) -> SIMD[
-    type, simd_width
-]:
-    """Loads values from addr according to a specific stride.
-
-    Parameters:
-      type: DType of `value`, the value to store.
-      simd_width: The width of the SIMD vectors.
-      address_space: The address space of the memory location.
-
-    Args:
-      addr: The memory location to load data from.
-      stride: How many lanes to skip before loading again.
-
-    Returns:
-      A vector containing the loaded data.
-    """
-
-    @parameter
-    if simd_width == 1:
-        return addr.load()
-
-    return strided_load[type, simd_width](addr, stride, True)
+    return gather(offset, mask, passthrough)
 
 
 # ===----------------------------------------------------------------------===#
@@ -1403,22 +1395,18 @@ fn strided_load[
 
 @always_inline("nodebug")
 fn strided_store[
-    type: DType,
-    simd_width: Int,
-    /,
-    address_space: AddressSpace = AddressSpace.GENERIC,
+    type: DType, //, simd_width: Int
 ](
     value: SIMD[type, simd_width],
-    addr: DTypePointer[type, address_space],
+    addr: UnsafePointer[Scalar[type], *_],
     stride: Int,
-    mask: SIMD[DType.bool, simd_width],
+    mask: SIMD[DType.bool, simd_width] = True,
 ):
     """Loads values from addr according to a specific stride.
 
     Parameters:
       type: DType of `value`, the value to store.
       simd_width: The width of the SIMD vectors.
-      address_space: The address space of the memory location.
 
     Args:
       value: The values to store.
@@ -1434,47 +1422,10 @@ fn strided_store[
             addr.store(value[0])
         return
 
-    alias IndexTy = SIMD[DType.index, simd_width]
-    var iota = llvm_intrinsic[
-        "llvm.experimental.stepvector", IndexTy, has_side_effect=False
+    var offset = int(addr) + stride * sizeof[type]() * math.iota[
+        DType.index, simd_width
     ]()
-    var offset = IndexTy(int(addr)) + IndexTy(stride) * iota * IndexTy(
-        sizeof[type]()
-    )
-
-    scatter[type, simd_width](value, offset.cast[DType.address](), mask)
-
-
-@always_inline("nodebug")
-fn strided_store[
-    type: DType,
-    simd_width: Int,
-    /,
-    address_space: AddressSpace = AddressSpace.GENERIC,
-](
-    value: SIMD[type, simd_width],
-    addr: DTypePointer[type, address_space],
-    stride: Int,
-):
-    """Loads values from addr according to a specific stride.
-
-    Parameters:
-      type: DType of `value`, the value to store.
-      simd_width: The width of the SIMD vectors.
-      address_space: The address space of the memory location.
-
-    Args:
-      value: The values to store.
-      addr: The location to store values at.
-      stride: How many lanes to skip before storing again.
-    """
-
-    @parameter
-    if simd_width == 1:
-        addr.store(value[0])
-        return
-
-    strided_store[type, simd_width](value, addr, stride, True)
+    scatter(value, offset, mask)
 
 
 # ===-------------------------------------------------------------------===#
